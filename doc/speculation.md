@@ -40,6 +40,37 @@ This directed notation complements the algebraic expressions by showing causal f
 
 ---
 
+## Prompted Transformer Structure
+
+### Differential Context
+
+Given the causal structure, we can ask: what does adding a token to context *change*?
+
+$$\Delta T(t_{n+1} | c) = T(c, t_{n+1}) - T(c)$$
+
+This "context derivative" captures how the new token modifies the transformer's behavior. Questions:
+- Is there a meaningful notion of $\frac{\partial T(c)}{\partial c}$?
+- How does this relate to in-context learning?
+
+### In-Context Learning
+
+The prompted transformer $T(c)$ can exhibit behaviors not present in bare $T$. For example, with few-shot examples in $c$, $T(c)$ performs tasks that $T$ alone cannot. This suggests:
+
+$$T(\text{examples})(x) \approx T_{\text{fine-tuned}}(x)$$
+
+The context state $\mathcal{C}(\text{examples})$ encodes "temporary weights" via the residual stream that attention can read.
+
+### Context as Soft Program
+
+We might view $T(c)$ as $T$ "programmed" by $c$:
+- The bare transformer $T$ is a universal machine
+- Context $c$ provides instructions/data
+- $T(c)(x)$ executes the program on input $x$
+
+This framing connects to work on transformers as universal computers and in-context learning as mesa-optimization.
+
+---
+
 ## Geometric Decomposition of Transformer Components
 
 ### The MLP Layer: Beyond Matrix Multiplication

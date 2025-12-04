@@ -75,3 +75,37 @@ $$\langle v_1, LN(v_2) \rangle \approx |v_1| \cos{\theta_{v_1,c(v_2)}} $$
 where $\theta_{a,b}$ is the angle between vectors $a$ and $b$, and $c(v)$ is the centering operation.
 
 Each vector sum can be considered in 2D, where it either increases or decreases $\theta$. By building up the sum of vectors on the right we can see which vectors contribute to the angle used in the final dot product.
+
+## Prompted Transformers
+
+A **prompted transformer** $T(c)$ represents a transformer with context $c$ already processed. It acts on the next token's embedding to produce a prediction.
+
+### Context State
+
+Let $\mathcal{C}(c) = \{x^i_j\}$ be the **context state**—all residual vectors at all positions and layers for context $c$. The prompted transformer's action on embedding $x$ is:
+
+$$T(c)(x) = F(x, \mathcal{C}(c))$$
+
+where $F$ is the forward pass for the final position, which can attend to all of $\mathcal{C}$.
+
+### Causal Structure
+
+For decoder-only transformers with causal masking, earlier positions are computed identically regardless of later tokens:
+
+$$x^i_j \text{ in } T(t_1, \ldots, t_n) = x^i_j \text{ in } T(t_1, \ldots, t_n, t_{n+1}) \quad \text{for } j < n$$
+
+This means context states *extend* rather than change:
+
+$$\mathcal{C}(c_1, c_2) \supset \mathcal{C}(c_1)$$
+
+The residuals for $c_1$ are preserved; $c_2$ adds new positions that can attend to them.
+
+### Context Does Not Compose Additively
+
+Importantly:
+$$T(c_1, c_2)(x) \neq T(c_1)(x) + T(c_2)(x)$$
+
+Context is not additive. The relationship is:
+- $T(c_1)$ establishes residual states
+- $T(c_1, c_2)$ extends those states; new positions attend to old ones
+- The final action on $x$ depends on the *full* context state

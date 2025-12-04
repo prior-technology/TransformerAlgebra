@@ -30,3 +30,16 @@ Notation aims to be consistent with [A Mathematical Framework for Transformer Ci
 | $B_i$ | Full transformer block $i$ |
 
 The tilde notation $\tilde{A}$, $\tilde{M}$ indicates sub-layers with their preceding layer normalization absorbed.
+
+## Prompted Transformers
+
+| Expression | Meaning |
+|------------|----------|
+| $T$ | Bare transformer (weights only, no context) |
+| $T(c)$ | Prompted transformer with context $c$ |
+| $T(t_1, \ldots, t_n)$ | Transformer with tokens $t_1, \ldots, t_n$ in context |
+| $T(\text{"Some context"})$ | Transformer with literal text as context |
+| $T(c)(x)$ | Action of prompted transformer on embedding $x$ at next position |
+| $\mathcal{C}(c)$ | Context state: all residuals $\{x^i_j\}$ for context $c$ |
+
+Context concatenation: $T(c_1, c_2)$ is equivalent to $T(c_1 \cdot c_2)$ where $\cdot$ denotes token sequence concatenation.
