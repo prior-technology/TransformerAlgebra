@@ -58,6 +58,39 @@ $$
 
 Note: The MLP sees the residual *after* attention has been added, so these terms are not independent.
 
+## Information Flow and Causal Structure
+
+Information flow in a decoder-only transformer is constrained by two factors:
+
+1. **Causal masking**: Position $j$ cannot attend to positions $k > j$
+2. **Sequential computation**: Block $i$ computes before block $i+1$
+
+This creates a "light cone" constraint. The contribution $\Delta x_j^i$ can only depend on:
+- Residuals $\{x_k^{i-1}\}_{k \leq j}$ (current and earlier positions, one layer below)
+- The weights of block $i$
+
+More precisely:
+$$\Delta x_j^i = f\left(\{x_k^{i-1}\}_{k \leq j}, \theta_i\right)$$
+
+where $\theta_i$ denotes the parameters of block $i$.
+
+```
+Layer:  3    ·  ·  ·  ●──────┐
+        2    ·  ·  ●  ↑      │ Causal
+        1    ·  ●  ↑  ↑      │ light cone
+        0    ●──●──●──●──────┘
+Position:    0  1  2  3
+```
+
+**Unlike physical light cones, there is no "speed of information" limit.** Attention allows direct transfer across arbitrary position distances in a single layer. Information from $(j=0, i=0)$ can influence $(j=3, i=1)$ directly—the attention at layer 1 can read from all earlier positions at layer 0.
+
+This is a key advantage over recurrent architectures, where information must traverse each position sequentially, creating a bottleneck for long-range dependencies.
+
+### References
+
+- Vaswani et al., [Attention Is All You Need](https://arxiv.org/abs/1706.03762) (2017) — introduces the transformer and attention mechanism
+- Elhage et al., [A Mathematical Framework for Transformer Circuits](https://transformer-circuits.pub/2021/framework/index.html) — formalizes information flow in terms of residual stream contributions
+
 ## Non-Linear Operator Properties
 
 | Component | Property |
