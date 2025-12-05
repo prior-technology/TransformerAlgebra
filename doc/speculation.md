@@ -105,35 +105,6 @@ Rotations (orthogonal transformations) preserve norms and angles. Neither attent
 
 The better abstraction might be **"projective geometry"** or **"cone operations"**: the MLP maps inputs to a cone of possible outputs, with the specific output depending on where in the input space you are.
 
-### Geometric Algebra Perspective
-
-In geometric algebra (GA), we have:
-- **Inner product** $a \cdot b$ — scalar, measures alignment
-- **Outer (wedge) product** $a \wedge b$ — bivector, encodes the plane spanned by $a, b$
-- **Geometric product** $ab = a \cdot b + a \wedge b$
-
-For high-dimensional residual spaces:
-
-| Transformer Operation | GA Analogue |
-|----------------------|-------------|
-| Dot product $\langle u, v \rangle$ | Inner product (grade-0) |
-| Attention pattern $\text{softmax}(QK^T)$ | Collection of inner products determining mixing coefficients |
-| MLP neuron activation | Inner product with threshold/gating |
-
-**What would MLP become in GA?**
-
-The MLP could be written as:
-$$
-M(x) = \sum_k g(x \cdot d_k) \, r_k
-$$
-
-where:
-- $d_k \in V$ are "detector directions" (learned)
-- $r_k \in V$ are "response directions" (learned)
-- $g: \mathbb{R} \to \mathbb{R}$ is the activation function
-
-This is fundamentally a **nonlinear superposition of rank-1 maps**, where the coefficient for each rank-1 map depends on the input.
-
 ### Abstract Block Decomposition
 
 For a transformer block:
