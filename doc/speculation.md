@@ -128,8 +128,54 @@ The key insight for interpretability: **the MLP learns a discrete set of directi
 
 ---
 
+## Block-wise Analysis
+
+### Isolating the First Block
+
+The notation $T_i(c)$ for block $i$ of a prompted transformer is useful, though whether $T_2(c)$ means "block 2 alone" or "blocks 1-2 composed" may depend on context—to be resolved through examples.
+
+For the first block, $T_1(c)(x)$ is cleanest to analyze because:
+- Attention only sees context embeddings $\{x_k^0\}_{k < j}$ (fixed once context given)
+- Plus the input $x$ at position $j$
+- No dependence on earlier block computations at context positions
+
+### Logit Difference Analysis
+
+When investigating why token A was predicted over token B, define the **logit difference direction**:
+$$d = \overline{A} - \overline{B}$$
+
+Then for any contribution $\Delta x$:
+$$\langle d, \Delta x \rangle > 0 \implies \text{pushes toward A over B}$$
+
+This projects the high-dimensional residual onto a 1D "decision axis." More generally, $\{\overline{A}, \overline{B}\}$ spans a 2D subspace for investigation.
+
+### First Block Contribution Decomposition
+
+$$\Delta x_j^1 = \underbrace{\tilde{A}^1(x)}_{\text{attention}} + \underbrace{\tilde{M}^1(x + \tilde{A}^1(x))}_{\text{MLP}}$$
+
+We can compute $\langle d, \tilde{A}^1(x) \rangle$ and $\langle d, \tilde{M}^1(\cdot) \rangle$ separately to see whether attention or MLP drives the prediction.
+
+### Feature Entanglement via Layer Norm
+
+The input to block 1 at position $k$ is $x_k^0 = \underline{t_k} + p_k$ (token + position). One might hope to separate contributions:
+$$V^{1,h}(LN(x_k^0)) \stackrel{?}{\approx} V^{1,h}(LN(\underline{t_k})) + V^{1,h}(LN(p_k))$$
+
+**But layer norm breaks linearity**: $LN(a + b) \neq LN(a) + LN(b)$
+
+So token and position features are entangled through attention. Options:
+1. Empirically measure how much each matters
+2. Accept combined $x_k^0$ as the unit of analysis
+3. Ablation experiments (zero out positional embeddings, etc.)
+
+### Attention: "Where" vs "What"
+
+The attention pattern $A^{1,h}_{jk}$ (from Q·K) determines **where** to look. The value projection $V^{1,h}$ determines **what** gets moved. These are separable computations worth analyzing independently.
+
+---
+
 ## Open Questions
 
 1. Can we formalize the "cone of possible outputs" for an MLP more precisely?
 2. Would outer products be useful for tracking which subspaces attention heads care about?
 3. How does the residual stream's high dimensionality enable superposition of features?
+4. Should $T_2(c)$ mean block 2 alone, or blocks 1-2 composed? (Resolve via examples)
