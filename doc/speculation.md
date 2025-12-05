@@ -171,6 +171,64 @@ So token and position features are entangled through attention. Options:
 
 The attention pattern $A^{1,h}_{jk}$ (from Q·K) determines **where** to look. The value projection $V^{1,h}$ determines **what** gets moved. These are separable computations worth analyzing independently.
 
+
+## Functional Discourse Grammar
+
+Functional Discourse Grammar is normally used to describe the production of spoken language in a way that is comparable across widely differing languages. How can our notation be informed by ideas from FDG?
+
+The features of such notation includes:
+
+* Describe a discourse, not just a sentence
+* Utterances are described in parallel at a number of levels, which are completed in parallel as the sentence is completed.  There are links between the levels, FDG describes 4 levels, including the phonological layer which is less relevant to text processing. Lower levels follow the actual word ordering more closely, upper levels may not be completed out of order.
+* Each level has a hierarchically ordered layered organization.
+* Layers always have a head, and usually a modifier (both of which may themselves be layers or lexical content), and may also be specified by a linguistic-operator and carry a linguistic-function.
+
+One challenge is the use of similar terminology with quite distinct meanings. In particular the use of layer and function in FDG may lead to confusion, we should be consistent in referring to linguistic-layer and linguistic-function when referring to these.
+
+A key difference between transformer language models and typical FDG tasks is that FDG is focussed on the formulation of speech rather than language interpretation, while generative language models both interpret and formulate language, with an indistinct boundary between the two. I expect the first and last layers to remain close to morphosyntactic representation, and internal transformer-layers to be reflect the interpersonal and representational linguistic-levels, but don't want to pre-emptively constrain the analysis in this way.
+
+### Methodological Constraint
+
+Structure should emerge from analyzing specific texts through the model, not be imposed from linguistic theory. FDG informs *expectations* (stacked interpretive layers, bracketed spans, head-modifier relations) but not the encoding. 
+
+Minimum expectations worth validating:
+- Multi-token words should be identifiable as units
+- Different surface forms of the same word should show relatable representations
+
+Beyond these, let the transformer's internal organization reveal itself.
+
+### Representing Hierarchical Structure
+
+For describing what we find, an XML-like notation aligned to token positions:
+
+```
+Position:     0        1        2         3        4
+Tokens:       The      quick    brown     fox      jumps
+              ─────────────────────────────────────────
+Level 1:      <NP                                  >  <VP...
+Level 2:        <Det>  <Adj>    <Adj>     <N>         <V>
+Level 3:                        [modifies→fox]
+```
+
+Multiple parallel "documents" stacked vertically, aligned at positions. Each level can mark:
+- **Spans**: bracketed regions `<...>`
+- **Heads**: the central element of a span
+- **Modifiers**: elements that attach to heads, with directionality
+
+This is purely descriptive—a way to record observations, not a claim about transformer internals.
+
+### Connecting Representation to Analysis
+
+The algebraic notation ($T_1(c)(x)$, attention patterns, residual decomposition) provides the *analytical tools*. The hierarchical representation provides a *descriptive language* for what we find.
+
+The bridge between them:
+1. **Attention patterns** may reveal spans—if positions 1-3 strongly attend to each other, that suggests a unit
+2. **Residual similarity** may reveal heads—if position 3's residual "summarizes" positions 1-3, it's acting as head
+3. **Logit projections** may reveal modifier relations—if removing position 2's contribution changes what position 3 predicts
+
+The open question: can we formalize "position $j$ acts as head of span $[a,b]$" in terms of residual stream properties?
+
+
 ---
 
 ## Open Questions
@@ -179,3 +237,5 @@ The attention pattern $A^{1,h}_{jk}$ (from Q·K) determines **where** to look. T
 2. Would outer products be useful for tracking which subspaces attention heads care about?
 3. How does the residual stream's high dimensionality enable superposition of features?
 4. Should $T_2(c)$ mean block 2 alone, or blocks 1-2 composed? (Resolve via examples)
+5. Can "position $j$ is head of span $[a,b]$" be defined via attention/residual properties?
+6. Do multi-token words show characteristic attention or residual patterns?
