@@ -48,6 +48,36 @@ Throughout the development process, the results should be validated against expe
 - Provide a way to label and name specific vectors or subspaces within the model weights to support interpretability.
 - Support better use of Retrieval-Augmented Generation
 
+# Current Status
+
+`notebooks/investigate.ipynb` demonstrates basic logit lens analysis, showing numeric logit values for a target token across layers. The next phase transforms this into **symbolic output** with named vectors and operators.
+
+See `doc/roadmap.md` for detailed planning.
+
+## Immediate Next Steps
+
+### Phase 1: Richer Extraction (Python)
+
+- [ ] **Extract per-block contributions** - Add `get_attention_contributions()` and `get_mlp_contributions()` methods
+- [ ] **Named vector registry** - Create `EmbeddingSpace` and `UnembeddingSpace` classes for token → vector lookup
+- [ ] **Symbolic inner products** - Format output as `⟨Dublin̄, x₅¹²⟩ = 0.89` instead of raw logits
+
+### Phase 2: Export Format (Python → Julia)
+
+- [ ] **Define serialization format** - HDF5 with residuals, attention patterns, MLP contributions indexed by (layer, position)
+- [ ] **Export function** - `lens.export("analysis.h5", prompt)` for Julia consumption
+
+### Phase 3: Julia Integration
+
+- [ ] **SymbolicTransformer types** - `Residual`, `Transformation`, `InnerProduct` with operator overloading
+- [ ] **Import from Python** - Load HDF5 exports and reconstruct residual graph
+- [ ] **Symbolic operations** - `expand()`, `simplify()`, `latex()` for expression manipulation
+
+## Related Repositories
+
+- **[SymbolicTransformer](https://github.com/prior-technology/SymbolicTransformer)** - Julia symbolic manipulation and notation rendering
+- **[VectorTransformer](https://github.com/prior-technology/VectorTransformer)** - Julia reference implementation for validation
+
 # History
 
 Key influences are "A Mathematical Framework for Transformer Circuits" and "logit lens".
