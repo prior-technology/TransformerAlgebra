@@ -49,88 +49,39 @@ Key requirements:
 
 ---
 
-## Core Abstractions Needed
+## Core Abstractions (TransformerAlgebra Python)
 
-### 1. Residual (Vector with Provenance)
+### Residual
+A vector with provenance: values, position, layer, symbolic label, and optionally how it was computed.
 
-A residual vector that knows its origin:
-```
-Residual:
-  - values: torch.Tensor (d_model,)
-  - position: int
-  - layer: int
-  - label: str  # e.g., "x₁²" or "Δx₁^(A,3,2)"
-  - source: Optional[Transformation]  # how was this computed?
-```
+### PromptedTransformer
+Model + context combination that caches all residuals and provides access to:
+- Residuals by (layer, position)
+- Per-block contributions (attention heads, MLP)
+- Named embedding/unembedding vectors
 
-### 2. Transformation (Expression Tree)
-
-An expression describing how a result was computed:
-```
-Transformation:
-  - operator: str  # "attention_head", "mlp", "sum", "layer_norm", etc.
-  - operands: list[Transformation | Residual]
-  - parameters: dict  # layer=3, head=2, etc.
-  - result: Optional[Residual]  # cached computation
-```
-
-### 3. PromptedTransformer (Model + Context)
-
-The combination of a model with cached context state:
-```
-PromptedTransformer:
-  - model: HuggingFace model
-  - context: str
-  - residuals: dict[(layer, position) -> Residual]
-  - contributions: dict[(layer, position) -> list[Residual]]  # attention + MLP parts
-```
-
-### 4. SymbolicInnerProduct (Display Object)
-
-A displayable inner product between named vectors:
-```
-SymbolicInnerProduct:
-  - left: Residual | str  # e.g., unembed vector "Dublin̄"
-  - right: Residual  
-  - value: float  # computed inner product
-  - normalized: bool  # cosine similarity or raw dot product
-  - display() -> str  # "⟨Dublin̄, x₁²⟩ = 0.73"
-```
+### SymbolicInnerProduct
+A displayable inner product: `⟨left, right⟩ = value` with symbolic names and optional normalization.
 
 ---
 
 ## Python vs Julia: Division of Labor
 
-After reviewing the codebase, here's the proposed split:
-
 ### TransformerAlgebra (Python)
-**Role**: Model interface, data extraction, initial prototyping
+**Role**: Model interface, data extraction, prototyping
 
-Responsibilities:
-- Load HuggingFace models (transformers library)
+- Load HuggingFace models
 - Extract hidden states, attention patterns, MLP outputs
-- Serialize intermediate states for Julia consumption
-- Provide Jupyter notebook interface for exploration
-- Quick iteration on new analysis ideas
+- Export intermediate states in a defined format
+- Jupyter notebook interface for exploration
 
 ### SymbolicTransformer (Julia)  
-**Role**: Symbolic manipulation, notation rendering, algebraic operations
+**Role**: Symbolic manipulation, notation rendering, validation
 
-Responsibilities:
-- Define `Residual`, `Transformation` types with Julia's type system
-- Operator overloading for mathematical notation (`*`, `+`, `'` for transpose)
-- Symbolic expression trees with expansion/simplification
-- LaTeX rendering of expressions
-- Macros for notation-close DSL (e.g., `@transform x₁² = Ã²(x₁¹)`)
-
-### VectorTransformer (Julia)
-**Role**: Clean reference implementation for validation
-
-Responsibilities:
-- Pure Julia transformer forward pass
-- Component-by-component validation against Python
-- Basis for understanding exact transformer operations
-- Numerical experiments with layer normalization, attention
+- Import data exported from TransformerAlgebra
+- Symbolic representation and algebraic operations
+- Notation-aligned display
+- Reference implementation for numerical validation
 
 ---
 
@@ -155,40 +106,63 @@ Responsibilities:
 
 ### Phase 2: Export Format (Python → Julia)
 
-4. **Define serialization format**
-   - JSON or HDF5 with:
-     - All residuals indexed by (layer, position)
-     - Attention patterns per head
-     - MLP contributions per block
-     - Token information (text, position, id)
-   - Single file per prompt analysis
+4. **Define serialization format** (see Interface Contract below)
 
 5. **Python export function**
    ```python
    lens.export("analysis.h5", prompt, include_attention=True, include_mlp=True)
    ```
 
-### Phase 3: Symbolic Representation (Julia)
+---
 
-6. **Define core Julia types in SymbolicTransformer**
-   - `struct Residual{T}` with position, layer, provenance
-   - `struct Transformation` as expression tree
-   - `struct InnerProduct{L,R}` for display
+## Interface Contract: What TransformerAlgebra Exports
 
-7. **Import from Python**
-   - Load HDF5 export into Julia structures
-   - Reconstruct residual graph with proper typing
+SymbolicTransformer will consume data exported by TransformerAlgebra. The export format provides:
 
-8. **Symbolic operations**
-   - `expand(transformation)` → show components
-   - `simplify(expression)` → combine like terms
-   - `latex(expression)` → render for display
+### Required Data
+
+| Field | Shape | Description |
+|-------|-------|-------------|
+| `residuals` | (layers+1, positions, d_model) | All residual vectors |
+| `attention_contributions` | (layers, heads, positions, d_model) | Per-head output at each position |
+| `mlp_contributions` | (layers, positions, d_model) | MLP output at each position |
+| `tokens` | (positions,) | Token strings |
+| `token_ids` | (positions,) | Token IDs |
+
+### Optional Data (large, load on demand)
+
+| Field | Shape | Description |
+|-------|-------|-------------|
+| `embeddings` | (vocab_size, d_model) | Full embedding matrix |
+| `unembeddings` | (vocab_size, d_model) | Full unembedding matrix |
+| `attention_patterns` | (layers, heads, positions, positions) | Full attention weights |
+
+### Metadata
+
+- Model name and config (layers, heads, d_model)
+- Prompt text
+- Indexing conventions (0-based, dimension order)
+
+### Format
+
+HDF5 for efficient cross-language tensor storage.
 
 ---
 
-## API Sketch
+## What TransformerAlgebra Needs FROM SymbolicTransformer
 
-### Python (TransformerAlgebra)
+TransformerAlgebra expects SymbolicTransformer to provide:
+
+1. **Import capability** - Load the HDF5 export format defined above
+2. **Named vector display** - Vectors labeled with token-based names (e.g., `Dublin̄`, `x₅¹²`)
+3. **Inner product display** - Format `⟨left, right⟩ = value` with symbolic names
+4. **Decomposition view** - Given a residual, show its components with operator/layer labels
+
+Implementation details are the responsibility of SymbolicTransformer.
+
+---
+
+## API Sketch (Python)
 
 ```python
 from transformer_algebra import PromptedTransformer, load_pythia
@@ -218,83 +192,21 @@ for component in T.decompose(x_final):
 T.export("ireland_analysis.h5")
 ```
 
-### Julia (SymbolicTransformer)
-
-```julia
-using SymbolicTransformer
-
-# Load exported analysis
-T = load_analysis("ireland_analysis.h5")
-
-# Same operations with Julia syntax
-dublin = T.unembed[:Dublin]
-x_final = T[12, 5]  # layer 12, position 5
-
-# Inner product with operator overloading
-ip = dublin' * x_final  # uses adjoint for "left side"
-display(ip)  # renders ⟨D̄ublin, x₅¹²⟩ = 0.89
-
-# Expand to see components
-Δx = T.contribution(12, 5)  # block 12 contribution at position 5
-expand(Δx)  # shows attention + MLP parts
-
-# Symbolic manipulation
-@transform result = Ã¹²(x₅¹¹) + M̃¹²(x₅¹¹ + Ã¹²(x₅¹¹))
-simplify(result)
-```
-
----
-
-## Requirements for Other Repos
-
-### SymbolicTransformer Requirements
-
-1. **Type System**
-   - [ ] `Residual{T}` parametric type with rich metadata
-   - [ ] `Transformation` sum type for expression trees
-   - [ ] `InnerProduct` display type with LaTeX support
-
-2. **Operator Overloading**
-   - [ ] `'` (adjoint) for transposing/conjugating vectors
-   - [ ] `*` for matrix-vector and inner products  
-   - [ ] `+` for residual combination with provenance tracking
-
-3. **Import/Export**
-   - [ ] HDF5 reader for Python exports
-   - [ ] Reconstruct full residual graph
-
-4. **Symbolic Operations**
-   - [ ] `expand()` to decompose transformations
-   - [ ] `simplify()` to combine terms
-   - [ ] `latex()` for rendering
-
-### VectorTransformer Requirements
-
-1. **Validation**
-   - [ ] Verify attention implementation matches HuggingFace
-   - [ ] Verify MLP implementation matches HuggingFace
-   - [ ] Verify layer norm implementation
-
-2. **Component Extraction**
-   - [ ] Function to compute single attention head output
-   - [ ] Function to compute single MLP output
-   - [ ] Function to compute layer norm effect
-
 ---
 
 ## Success Criteria
 
-A successful implementation will allow:
+A successful TransformerAlgebra implementation will:
 
-1. **Interactive exploration**: In a notebook, expand `⟨Dublin̄, x₅¹²⟩` to see which attention heads and MLP layers contributed most
+1. **Symbolic output**: Display inner products with named vectors like `⟨Dublin̄, x₅¹²⟩ = 0.89`
 
-2. **Symbolic comparison**: Compare `⟨Dublin̄, x₅¹²⟩` vs `⟨Belfast̄, x₅¹²⟩` in terms of their component contributions
+2. **Decomposition**: Show which attention heads and MLP layers contributed to a residual
 
-3. **Notation consistency**: Output reads like the mathematical notation in `doc/notation.md`
+3. **Notation consistency**: Output aligns with the mathematical notation in `doc/notation.md`
 
-4. **Cross-validation**: Julia and Python produce the same numerical results for the same analysis
+4. **Clean export**: Provide HDF5 files that SymbolicTransformer can consume
 
-5. **Referential transparency**: Any subexpression can be extracted, named, and reused in further analysis
+5. **Referenceable terms**: Any vector or contribution can be extracted and reused in further analysis
 
 ---
 
