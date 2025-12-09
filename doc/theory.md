@@ -21,6 +21,15 @@ $$
 \langle \overline{\text{token}}, LN(x_j^L) \rangle
 $$
 
+### From Logits to Probabilities
+
+During inference, the probability of selecting a particular next token is computed via softmax over the full vocabulary:
+$$
+P(\text{token} | x_j^L) = \frac{\exp(\langle \overline{\text{token}}, LN(x_j^L) \rangle)}{\sum_{t \in V} \exp(\langle \overline{t}, LN(x_j^L) \rangle)}
+$$
+
+This normalizes the logits into a probability distribution. The denominator sums over all tokens $t$ in the vocabulary $V$, making the probabilities sum to 1. This is the fundamental connection between the geometric view (inner products) and the probabilistic view (next-token prediction).
+
 ## Residual Stream Structure
 
 The layers of the transformer add to the residual stream:

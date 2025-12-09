@@ -44,7 +44,7 @@ Decomposition at final layer:
 Key requirements:
 1. **Named vectors** - use token-based names (underline for embedding, overline for unembedding)
 2. **Operator labels** - show which block/layer/head produced each contribution  
-3. **Angular representation** - cosine similarities more interpretable than raw logits
+3. **Logits and probabilities** - report inner products (logits) and softmax probabilities
 4. **Referenceable terms** - be able to grab `Δx₁^(A,3,2)` and examine it further
 
 ---
@@ -100,8 +100,8 @@ A displayable inner product: `⟨left, right⟩ = value` with symbolic names and
    - Support lookup by token text: `embed["Dublin"]`, `unembed["Dublin"]`
 
 3. **Inner product reporting**
-   - Compute `⟨unembed[token], residual⟩` for each layer/position
-   - Normalize to cosine similarity
+   - Compute `⟨unembed[token], residual⟩` (logit) for each layer/position
+   - Compute softmax probabilities over all vocabulary tokens
    - Format output with symbolic names
 
 ### Phase 2: Export Format (Python → Julia)
