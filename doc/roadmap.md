@@ -68,20 +68,35 @@ A displayable inner product: `⟨left, right⟩ = value` with symbolic names and
 ## Python vs Julia: Division of Labor
 
 ### TransformerAlgebra (Python)
-**Role**: Model interface, data extraction, prototyping
+**Role**: Model interface, data extraction, reference resolution
 
 - Load HuggingFace models
-- Extract hidden states, attention patterns, MLP outputs
-- Export intermediate states in a defined format
-- Jupyter notebook interface for exploration
+- Define **reference types** that describe how to navigate the model graph
+- Cache intermediate states (residuals, block contributions) per context
+- Provide **TransformerService** API for Julia to call
+- Handle all torch operations (forward pass, gradients)
 
-### SymbolicTransformer (Julia)  
-**Role**: Symbolic manipulation, notation rendering, validation
+### SymbolicTransformer (Julia)
+**Role**: Symbolic manipulation, expansion rules, notation rendering
 
-- Import data exported from TransformerAlgebra
-- Symbolic representation and algebraic operations
-- Notation-aligned display
-- Reference implementation for numerical validation
+- Hold symbolic **expressions** built from references
+- Apply algebraic transformations (expand, simplify)
+- Call Python to resolve references when evaluation is needed
+- Format output with notation-aligned display
+- Use **PythonCall.jl** for direct Python interop
+
+### Interface Design (see `doc/interface.md`)
+
+The interface is based on **reference types** rather than raw data:
+
+- **TokenRef** - token_id + text
+- **EmbeddingRef** - token + path to W_E
+- **UnembeddingRef** - token + path to W_U
+- **ResidualRef** - context_id + layer + position
+- **BlockContribRef** - context_id + block + position + component
+- **LayerNormRef** - paths to γ, β + epsilon
+
+Julia builds expressions from these refs and calls Python to resolve them.
 
 ---
 
