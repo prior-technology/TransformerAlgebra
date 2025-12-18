@@ -1,10 +1,13 @@
 """Core classes for analyzing transformer internal states."""
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+if TYPE_CHECKING:
+    from typing import Self
 
 
 def load_pythia_model(model_name: str = "EleutherAI/pythia-160m-deduped"):
@@ -58,6 +61,124 @@ class TokenInfo:
         return f"TokenInfo(tokens={self.tokens}, ids={self.token_ids})"
 
 
+class EmbeddingVector:
+    """An input embedding vector - the domain of T.
+
+    Represents embed(token) - the token embedding before any transformer blocks.
+    This is the input that T maps to T(embed(token)).
+    """
+
+    def __init__(self, tensor: torch.Tensor, token_text: str, token_id: int,
+                 transformer: "PromptedTransformer"):
+        self.tensor = tensor
+        self.token_text = token_text
+        self.token_id = token_id
+        self.transformer = transformer
+
+    def __repr__(self):
+        return f"embed({self.token_text!r})"
+
+
+class ResidualVector:
+    """A residual stream vector - the output of T acting on an embedding.
+
+    Represents T^i(embed(token)) - the result after i transformer blocks.
+    T is a nonlinear operator; T^n means the full transformer, T^5 means
+    truncated after block 5.
+    """
+
+    def __init__(self, tensor: torch.Tensor, transformer: "PromptedTransformer",
+                 layer: int, position: int, token_text: str):
+        self.tensor = tensor
+        self.transformer = transformer
+        self.layer = layer
+        self.position = position
+        self.token_text = token_text
+
+    def __repr__(self):
+        n_layers = self.transformer.config.n_layers
+        embed_str = f"embed({self.token_text!r})"
+        if self.layer == n_layers:
+            return f"T({embed_str})"
+        else:
+            return f"T^{self.layer}({embed_str})"
+
+    @property
+    def normed(self) -> torch.Tensor:
+        """Apply final layer norm to get the normalized residual."""
+        return self.transformer._final_ln(self.tensor)
+
+
+class LogitMapping:
+    """A mapping from tokens to logits with symbolic representation.
+
+    Supports subscripting: logits["Dublin"] returns the logit for Dublin.
+    """
+
+    def __init__(self, logits_tensor: torch.Tensor, residual: ResidualVector):
+        self._logits = logits_tensor
+        self._residual = residual
+        self._transformer = residual.transformer
+
+    def __repr__(self):
+        return f"logits({self._residual})"
+
+    def __getitem__(self, token_text: str) -> "LogitValue":
+        """Get the logit for a specific token."""
+        token_id = self._transformer.get_token_id(token_text)
+        value = self._logits[token_id].item()
+        return LogitValue(value, token_text, self._residual)
+
+    def top_k(self, k: int = 5) -> list[tuple[str, float]]:
+        """Get the top-k tokens by logit value."""
+        values, indices = torch.topk(self._logits, k)
+        result = []
+        for v, idx in zip(values.tolist(), indices.tolist()):
+            token = self._transformer.tokenizer.decode([idx])
+            result.append((token, v))
+        return result
+
+    def summary(self, k: int = 5) -> str:
+        """Return a formatted summary of top predictions."""
+        lines = [f"Top {k} predictions:"]
+        for i, (token, logit) in enumerate(self.top_k(k), 1):
+            lines.append(f"  {i}. {token!r} (logit: {logit:.2f})")
+        return "\n".join(lines)
+
+
+class LogitValue:
+    """A single logit value with symbolic representation.
+
+    Represents <unembed(token), T(x)> - the inner product of the
+    unembedding vector with the transformer output.
+    """
+
+    def __init__(self, value: float, token_text: str, residual: ResidualVector):
+        self.value = value
+        self.token_text = token_text
+        self._residual = residual
+
+    def __repr__(self):
+        return f"<unembed({self.token_text!r}), {self._residual}> = {self.value:.2f}"
+
+    def __float__(self):
+        return self.value
+
+
+def logits(residual: ResidualVector) -> LogitMapping:
+    """Compute logits from a residual vector.
+
+    Args:
+        residual: A ResidualVector from T(token)
+
+    Returns:
+        LogitMapping that can be subscripted by token
+    """
+    normed = residual.normed
+    logits_tensor = residual.transformer._unembed(normed)
+    return LogitMapping(logits_tensor, residual)
+
+
 class PromptedTransformer:
     """A transformer model with a specific prompt/context.
 
@@ -103,6 +224,78 @@ class PromptedTransformer:
     def n_positions(self) -> int:
         """Number of token positions in the prompt."""
         return len(self._token_info.token_ids)
+
+    def __repr__(self):
+        n = len(self._token_info.tokens)
+        return f"T(<{n} tokens>)"
+
+    def embed(self, token_text: str) -> EmbeddingVector:
+        """Get the embedding vector for a token.
+
+        Args:
+            token_text: Token text (e.g., " is")
+
+        Returns:
+            EmbeddingVector representing embed(token)
+
+        Example:
+            >>> T = PromptedTransformer(model, tokenizer, "The capital of Ireland")
+            >>> x = T.embed(" is")  # embedding vector for " is"
+            >>> T(x)                # apply transformer to embedding
+        """
+        token_id = self.get_token_id(token_text)
+        # Get embedding matrix and extract row for this token
+        embed_matrix = self.model.gpt_neox.embed_in.weight
+        tensor = embed_matrix[token_id, :].detach()
+        return EmbeddingVector(
+            tensor=tensor,
+            token_text=token_text,
+            token_id=token_id,
+            transformer=self,
+        )
+
+    def __call__(self, token: str | EmbeddingVector, layer: int = -1) -> ResidualVector:
+        """Apply the transformer to a token or embedding vector.
+
+        T is a nonlinear operator mapping embed(token) → T(embed(token)).
+
+        Args:
+            token: Either a token string (e.g., " is") or an EmbeddingVector
+            layer: Which layer's residual to return (-1 = final, default)
+
+        Returns:
+            ResidualVector representing T^layer(embed(token))
+
+        Example:
+            >>> T = PromptedTransformer(model, tokenizer, "The capital of Ireland")
+            >>> T(" is")           # shorthand
+            >>> T(T.embed(" is"))  # explicit embedding
+        """
+        # Handle both string and EmbeddingVector inputs
+        if isinstance(token, EmbeddingVector):
+            token_text = token.token_text
+        else:
+            token_text = token
+
+        # Extend prompt with new token and run model
+        full_prompt = self.prompt + token_text
+        extended_tokens = self.tokenizer(full_prompt, return_tensors="pt")
+
+        with torch.no_grad():
+            outputs = self.model(**extended_tokens, output_hidden_states=True)
+
+        # Get residual at specified layer
+        if layer == -1:
+            layer = self.config.n_layers
+        residual_tensor = outputs.hidden_states[layer][0, -1, :]
+
+        return ResidualVector(
+            tensor=residual_tensor,
+            transformer=self,
+            layer=layer,
+            position=-1,
+            token_text=token_text,
+        )
 
     def _tokenize(self, text: str) -> TokenInfo:
         """Tokenize text and return token information."""
