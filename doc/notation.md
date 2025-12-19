@@ -43,3 +43,30 @@ The tilde notation $\tilde{A}$, $\tilde{M}$ indicates sub-layers with their prec
 | $\mathcal{C}(c)$ | Context state: all residuals $\{x^i_j\}$ for context $c$ |
 
 Context concatenation: $T(c_1, c_2)$ is equivalent to $T(c_1 \cdot c_2)$ where $\cdot$ denotes token sequence concatenation.
+
+## Truncated Transformer
+
+| Expression | Meaning |
+|------------|----------|
+| $T^i$ | Transformer truncated after block $i$ (first $i$ blocks only) |
+| $T^0(x)$ | Identity: $T^0(x) = x$ (embedding, before any blocks) |
+| $T^n(x)$ | Full transformer: $T^n = T$ where $n$ is total blocks |
+
+The block contribution $\Delta x^i$ is defined as the difference:
+$$\Delta x^i = T^{i+1}(x) - T^i(x)$$
+
+## Expansion Identity
+
+The full transformer output can be written in two equivalent forms:
+
+**Compact form:**
+$$T(x) = T^n(x)$$
+
+**Expanded form:**
+$$T(x) = x + \Delta x^0 + \Delta x^1 + \cdots + \Delta x^{n-1}$$
+
+Or using summation notation:
+$$T(x) = x + \sum_{i=0}^{n-1} \Delta x^i$$
+
+Note: Each $\Delta x^i$ depends on the accumulated residual $T^i(x)$, not just the original embedding. For parallel attention architectures (e.g., Pythia/GPT-NeoX):
+$$\Delta x^i = \tilde{A}^i(T^i(x)) + \tilde{M}^i(T^i(x))$$

@@ -6,23 +6,27 @@ This document captures the vision and requirements for symbolic analysis of tran
 
 ## Current State
 
-**investigate.ipynb** demonstrates basic logit lens analysis:
-- Loads a Pythia model and tokenizes a prompt
-- Tracks the logit for a target token (e.g., " Dublin") across layers
-- Shows numeric logit values like `After block 12: +786.32`
-- Lists top 5 predictions with their raw logit values
+**investigate.ipynb** demonstrates symbolic logit lens analysis with named vectors:
+- `PromptedTransformer` class: `T = PromptedTransformer(model, tokenizer, "The capital of Ireland")`
+- Callable syntax: `T(" is")` returns a `ResidualVector` representing `T(embed(' is'))`
+- Symbolic logits: `logits(x)[" Dublin"]` displays as `<unembed(' Dublin'), T(embed(' is'))> = 786.74`
+- Probability predictions: `predict(x)` returns softmax probabilities with symbolic display
+- Summary methods: `logits(x).summary()` shows top-k predictions
 
 **Current output format:**
-```
-Logit for ' Dublin' at each layer:
-  After embedding: +219.88
-  After block 1: +175.46
-  ...
-Top 5 predictions after final layer:
-  1. ' the' (logit: 786.42)
+```python
+>>> L = logits(T(" is"))
+>>> L[" Dublin"]
+<unembed(' Dublin'), T(embed(' is'))> = 786.74
+
+>>> predict(x).summary()
+"Top 5 predictions:
+  1. ' the' (13.66%, logit=790.24)
+  2. ' a' (4.18%, logit=789.05)
+  ..."
 ```
 
-This is useful but opaque—numbers without semantic grounding.
+This provides semantic grounding through symbolic inner products.
 
 ---
 
@@ -104,20 +108,30 @@ Julia builds expressions from these refs and calls Python to resolve them.
 
 ### Phase 1: Richer Extraction (Python)
 
-1. **Extract per-block contributions**
+1. ~~**Inner product reporting**~~ ✓ DONE
+   - `logits(x)[token]` returns symbolic `<unembed(token), T(x)> = value`
+   - `predict(x)` computes softmax probabilities
+   - `summary()` methods format top-k predictions
+
+2. **Implement `expand()`** ← NEXT
+   - Converts between compact and expanded forms (see `doc/notation.md`):
+     ```
+     Compact:  LN(T(embed(' is')))
+     Expanded: LN(embed(' is') + Δx^0 + Δx^1 + ... + Δx^{n-1})
+     ```
+   - Each Δx^i = T^{i+1}(x) - T^i(x) is the contribution from block i
+   - Requires extracting per-block contributions (attention + MLP)
+   - Each term should be a referenceable object for further analysis
+   - Key relation: `<x, LN(a + b)> = (<x,a> + <x,b>) / ||a+b||`
+
+3. **Extract per-block contributions** (supports expand)
    - Add method to get attention output per head: `get_attention_contributions()`
    - Add method to get MLP output per block: `get_mlp_contributions()`
    - Cache all intermediate residuals with position/layer metadata
 
-2. **Named vector registry**
-   - Create `EmbeddingSpace` class that maps token strings to embedding vectors
-   - Create `UnembeddingSpace` class for token → unembed vector
-   - Support lookup by token text: `embed["Dublin"]`, `unembed["Dublin"]`
-
-3. **Inner product reporting**
-   - Compute `⟨unembed[token], residual⟩` (logit) for each layer/position
-   - Compute softmax probabilities over all vocabulary tokens
-   - Format output with symbolic names
+4. **Named vector registry** (lower priority)
+   - Optional: `embed["Dublin"]`, `unembed["Dublin"]` syntax
+   - Current subscripting via `logits(x)[token]` may be sufficient
 
 ### Phase 2: Export Format (Python → Julia)
 
