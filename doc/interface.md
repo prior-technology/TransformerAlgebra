@@ -1,6 +1,6 @@
 # TransformerAlgebra ⟷ SymbolicTransformer Interface
 
-*December 2024*
+*December 2025*
 
 This document defines the interface between TransformerAlgebra (Python) and SymbolicTransformer (Julia) for symbolic transformer analysis.
 
