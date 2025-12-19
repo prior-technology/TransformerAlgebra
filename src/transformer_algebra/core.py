@@ -1,13 +1,36 @@
 """Core classes for analyzing transformer internal states."""
 
 from dataclasses import dataclass
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Protocol, runtime_checkable
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 if TYPE_CHECKING:
     from typing import Self
+
+
+# =============================================================================
+# VectorLike Protocol
+# =============================================================================
+
+@runtime_checkable
+class VectorLike(Protocol):
+    """Protocol for vector-like objects in expressions.
+
+    All vector-valued objects (embeddings, residuals, contributions)
+    implement this protocol, enabling uniform handling in expressions.
+    """
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        """Evaluate to concrete tensor [d_model]."""
+        ...
+
+    @property
+    def d_model(self) -> int:
+        """Vector dimension."""
+        ...
 
 
 def load_pythia_model(model_name: str = "EleutherAI/pythia-160m-deduped"):
@@ -66,14 +89,24 @@ class EmbeddingVector:
 
     Represents embed(token) - the token embedding before any transformer blocks.
     This is the input that T maps to T(embed(token)).
+
+    Implements VectorLike protocol.
     """
 
     def __init__(self, tensor: torch.Tensor, token_text: str, token_id: int,
                  transformer: "PromptedTransformer"):
-        self.tensor = tensor
+        self._tensor = tensor
         self.token_text = token_text
         self.token_id = token_id
         self.transformer = transformer
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        return self._tensor
+
+    @property
+    def d_model(self) -> int:
+        return self._tensor.shape[0]
 
     def __repr__(self):
         return f"embed({self.token_text!r})"
@@ -85,15 +118,28 @@ class ResidualVector:
     Represents T^i(embed(token)) - the result after i transformer blocks.
     T is a nonlinear operator; T^n means the full transformer, T^5 means
     truncated after block 5.
+
+    Implements VectorLike protocol.
     """
 
     def __init__(self, tensor: torch.Tensor, transformer: "PromptedTransformer",
-                 layer: int, position: int, token_text: str):
-        self.tensor = tensor
+                 layer: int, position: int, token_text: str,
+                 hidden_states: tuple[torch.Tensor, ...] | None = None):
+        self._tensor = tensor
         self.transformer = transformer
         self.layer = layer
         self.position = position
         self.token_text = token_text
+        # Cache all hidden states for expand()
+        self._hidden_states = hidden_states
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        return self._tensor
+
+    @property
+    def d_model(self) -> int:
+        return self._tensor.shape[0]
 
     def __repr__(self):
         n_layers = self.transformer.config.n_layers
@@ -106,7 +152,256 @@ class ResidualVector:
     @property
     def normed(self) -> torch.Tensor:
         """Apply final layer norm to get the normalized residual."""
-        return self.transformer._final_ln(self.tensor)
+        return self.transformer._final_ln(self._tensor)
+
+    def expand(self) -> "VectorSum":
+        """Expand into embedding plus block contributions.
+
+        T(x) -> x + Δx^0 + Δx^1 + ... + Δx^{n-1}
+
+        Returns:
+            VectorSum of embedding and block contributions
+        """
+        if self._hidden_states is None:
+            raise ValueError(
+                "Cannot expand: hidden states not cached. "
+                "This ResidualVector was created without storing intermediate states."
+            )
+
+        terms: list[VectorLike] = []
+
+        # First term: the embedding (hidden_states[0])
+        embed_tensor = self._hidden_states[0][0, self.position, :]
+        terms.append(EmbeddingVector(
+            tensor=embed_tensor,
+            token_text=self.token_text,
+            token_id=self.transformer.get_token_id(self.token_text),
+            transformer=self.transformer,
+        ))
+
+        # Block contributions: Δx^i = hidden_states[i+1] - hidden_states[i]
+        for i in range(self.layer):
+            delta = (self._hidden_states[i + 1][0, self.position, :] -
+                     self._hidden_states[i][0, self.position, :])
+            terms.append(BlockContribution(
+                tensor=delta,
+                layer=i,
+                transformer=self.transformer,
+                token_text=self.token_text,
+                position=self.position,
+                hidden_states=self._hidden_states,
+            ))
+
+        return VectorSum(terms)
+
+
+class AttentionContribution:
+    """Contribution from the attention sublayer of a block.
+
+    Represents Δx^i_A - the attention component of block i's contribution.
+
+    Implements VectorLike protocol.
+    """
+
+    def __init__(self, tensor: torch.Tensor, layer: int,
+                 transformer: "PromptedTransformer", token_text: str,
+                 position: int):
+        self._tensor = tensor
+        self.layer = layer
+        self.transformer = transformer
+        self.token_text = token_text
+        self.position = position
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        return self._tensor
+
+    @property
+    def d_model(self) -> int:
+        return self._tensor.shape[0]
+
+    def __repr__(self):
+        return f"Δx^{self.layer}_A"
+
+
+class MLPContribution:
+    """Contribution from the MLP sublayer of a block.
+
+    Represents Δx^i_M - the MLP component of block i's contribution.
+
+    Implements VectorLike protocol.
+    """
+
+    def __init__(self, tensor: torch.Tensor, layer: int,
+                 transformer: "PromptedTransformer", token_text: str,
+                 position: int):
+        self._tensor = tensor
+        self.layer = layer
+        self.transformer = transformer
+        self.token_text = token_text
+        self.position = position
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        return self._tensor
+
+    @property
+    def d_model(self) -> int:
+        return self._tensor.shape[0]
+
+    def __repr__(self):
+        return f"Δx^{self.layer}_M"
+
+
+class BlockContribution:
+    """Contribution from a single transformer block.
+
+    Represents Δx^i = T^{i+1}(x) - T^i(x), the change in residual
+    from block i. Can be expanded into Δx^i_A + Δx^i_M.
+
+    Implements VectorLike protocol.
+    """
+
+    def __init__(self, tensor: torch.Tensor, layer: int,
+                 transformer: "PromptedTransformer", token_text: str,
+                 position: int,
+                 hidden_states: tuple[torch.Tensor, ...] | None = None,
+                 attention_tensor: torch.Tensor | None = None,
+                 mlp_tensor: torch.Tensor | None = None):
+        self._tensor = tensor
+        self.layer = layer
+        self.transformer = transformer
+        self.token_text = token_text
+        self.position = position
+        # Store hidden states for computing sublayer contributions
+        self._hidden_states = hidden_states
+        # Cache attention/MLP components for expand()
+        self._attention_tensor = attention_tensor
+        self._mlp_tensor = mlp_tensor
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        return self._tensor
+
+    @property
+    def d_model(self) -> int:
+        return self._tensor.shape[0]
+
+    def __repr__(self):
+        return f"Δx^{self.layer}"
+
+    def expand(self) -> "VectorSum":
+        """Expand into attention + MLP contributions.
+
+        Δx^i -> Δx^i_A + Δx^i_M
+
+        Returns:
+            VectorSum of attention and MLP contributions
+        """
+        if self._attention_tensor is None or self._mlp_tensor is None:
+            if self._hidden_states is None:
+                raise ValueError(
+                    "Cannot expand BlockContribution: hidden states not available. "
+                    "This BlockContribution was created without storing intermediate states."
+                )
+            # Compute attention and MLP contributions by running sublayers
+            attn_tensor, mlp_tensor = self.transformer._compute_sublayer_contributions(
+                self.layer, self.position, self._hidden_states
+            )
+            self._attention_tensor = attn_tensor
+            self._mlp_tensor = mlp_tensor
+
+        attn = AttentionContribution(
+            tensor=self._attention_tensor,
+            layer=self.layer,
+            transformer=self.transformer,
+            token_text=self.token_text,
+            position=self.position,
+        )
+        mlp = MLPContribution(
+            tensor=self._mlp_tensor,
+            layer=self.layer,
+            transformer=self.transformer,
+            token_text=self.token_text,
+            position=self.position,
+        )
+        return VectorSum([attn, mlp])
+
+
+class VectorSum:
+    """Sum of vector-like objects.
+
+    Represents an expanded form like: x + Δx^0 + Δx^1 + ... + Δx^{n-1}
+
+    Is itself VectorLike: can be used anywhere a vector is expected.
+    """
+
+    def __init__(self, terms: list[VectorLike]):
+        if not terms:
+            raise ValueError("VectorSum requires at least one term")
+        self.terms = terms
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        """Sum of all term tensors."""
+        result = self.terms[0].tensor.clone()
+        for term in self.terms[1:]:
+            result = result + term.tensor
+        return result
+
+    @property
+    def d_model(self) -> int:
+        return self.terms[0].d_model
+
+    def __getitem__(self, i: int) -> VectorLike:
+        return self.terms[i]
+
+    def __len__(self) -> int:
+        return len(self.terms)
+
+    def __iter__(self):
+        return iter(self.terms)
+
+    def __repr__(self):
+        return " + ".join(repr(t) for t in self.terms)
+
+    def expand(self) -> "VectorSum":
+        """Expand each term that can be expanded."""
+        expanded: list[VectorLike] = []
+        for t in self.terms:
+            if hasattr(t, 'expand'):
+                result = t.expand()
+                if isinstance(result, VectorSum):
+                    expanded.extend(result.terms)
+                else:
+                    expanded.append(result)
+            else:
+                expanded.append(t)
+        return VectorSum(expanded)
+
+
+def expand(x: VectorLike) -> VectorSum:
+    """Expand a vector into its additive components.
+
+    For ResidualVector: T(x) -> embed(x) + Δx^0 + Δx^1 + ... + Δx^{n-1}
+    For VectorSum: expand each term recursively
+    For other VectorLike: wrap in single-term VectorSum
+
+    Args:
+        x: Any vector-like object
+
+    Returns:
+        VectorSum of components
+
+    Example:
+        >>> x = T(" is")
+        >>> ex = expand(x)
+        >>> print(ex)  # embed(' is') + Δx^0 + Δx^1 + ... + Δx^{11}
+        >>> print(len(ex))  # 13 (embedding + 12 blocks)
+    """
+    if hasattr(x, 'expand'):
+        return x.expand()
+    return VectorSum([x])
 
 
 class LogitMapping:
@@ -387,6 +682,7 @@ class PromptedTransformer:
             layer=layer,
             position=-1,
             token_text=token_text,
+            hidden_states=outputs.hidden_states,  # Cache for expand()
         )
 
     def _tokenize(self, text: str) -> TokenInfo:
@@ -462,3 +758,60 @@ class PromptedTransformer:
         """
         resid_normed = self.residual_normed(layer, position)
         return self._unembed(resid_normed)
+
+    def _compute_sublayer_contributions(
+        self, layer: int, position: int,
+        hidden_states: tuple[torch.Tensor, ...] | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute attention and MLP contributions for a block.
+
+        For GPT-NeoX (Pythia), the architecture uses parallel attention and MLP:
+            x_new = x + attention(ln(x)) + mlp(ln(x))
+
+        This method runs each sublayer separately to extract individual contributions.
+
+        Args:
+            layer: Block index (0 to n_layers-1)
+            position: Token position
+            hidden_states: Optional tuple of hidden states to use (if None, uses cached)
+
+        Returns:
+            Tuple of (attention_contribution, mlp_contribution) tensors
+        """
+        # Use provided hidden states or fall back to cached ones
+        states = hidden_states if hidden_states is not None else self._hidden_states
+
+        # Get the residual before this block
+        residual_before = states[layer][0:1, :, :]  # Keep batch dim
+
+        # Get the transformer block
+        block = self.model.gpt_neox.layers[layer]
+
+        with torch.no_grad():
+            # GPT-NeoX parallel architecture:
+            # - attention uses input_layernorm
+            # - MLP uses post_attention_layernorm (in parallel, not after attention)
+            attn_ln_out = block.input_layernorm(residual_before)
+            mlp_ln_out = block.post_attention_layernorm(residual_before)
+
+            # Compute attention contribution
+            # GPT-NeoX attention uses rotary position embeddings
+            seq_len = residual_before.shape[1]
+            attention_mask = torch.ones(1, seq_len, device=residual_before.device)
+
+            # Compute rotary position embeddings
+            position_ids = torch.arange(seq_len, device=residual_before.device).unsqueeze(0)
+            position_embeddings = self.model.gpt_neox.rotary_emb(attn_ln_out, position_ids)
+
+            attn_output = block.attention(
+                attn_ln_out,
+                attention_mask=attention_mask,
+                position_embeddings=position_embeddings,
+            )
+            # attn_output is a tuple: (hidden_states, present_key_value)
+            attn_contribution = attn_output[0][0, position, :]
+
+            # Compute MLP contribution using post_attention_layernorm
+            mlp_contribution = block.mlp(mlp_ln_out)[0, position, :]
+
+        return attn_contribution, mlp_contribution

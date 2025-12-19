@@ -1,6 +1,6 @@
 # TransformerAlgebra Roadmap
 
-*December 2025*
+*December 2025cd*
 
 This document captures the vision and requirements for symbolic analysis of transformer internal states, and how this drives development across the three related repositories.
 

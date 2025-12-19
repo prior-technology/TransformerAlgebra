@@ -1,17 +1,28 @@
 """TransformerAlgebra - Symbolic notation and tools for analyzing transformer internal states."""
 
 from .core import (
+    # Protocol
+    VectorLike,
+    # Core classes
     PromptedTransformer,
     ModelConfig,
     load_pythia_model,
     EmbeddingVector,
     ResidualVector,
+    BlockContribution,
+    AttentionContribution,
+    MLPContribution,
+    VectorSum,
+    # Logits
     LogitMapping,
     LogitValue,
     logits,
+    # Predictions
     ProbabilityMapping,
     ProbabilityValue,
     predict,
+    # Functions
+    expand,
 )
 from .interface import (
     ModelPath,
@@ -28,18 +39,28 @@ from .interface import (
 from .service import TransformerService
 
 __all__ = [
-    # Core
+    # Protocol
+    "VectorLike",
+    # Core classes
     "PromptedTransformer",
     "ModelConfig",
     "load_pythia_model",
     "EmbeddingVector",
     "ResidualVector",
+    "BlockContribution",
+    "AttentionContribution",
+    "MLPContribution",
+    "VectorSum",
+    # Logits
     "LogitMapping",
     "LogitValue",
     "logits",
+    # Predictions
     "ProbabilityMapping",
     "ProbabilityValue",
     "predict",
+    # Functions
+    "expand",
     # Interface types
     "ModelPath",
     "TokenRef",
