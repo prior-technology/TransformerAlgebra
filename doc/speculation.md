@@ -171,6 +171,93 @@ So token and position features are entangled through attention. Options:
 
 The attention pattern $A^{1,h}_{jk}$ (from Q·K) determines **where** to look. The value projection $V^{1,h}$ determines **what** gets moved. These are separable computations worth analyzing independently.
 
+---
+
+## Single-Token Probability Approximation
+
+### The Partition Function Problem
+
+The standard softmax formula for next-token probability is:
+$$
+P(\text{token} | x) = \frac{\exp(z_{\text{token}})}{\sum_{t \in V} \exp(z_t)} = \frac{\exp(z_{\text{token}})}{Z(x)}
+$$
+
+where $z_t = \langle \overline{t}, LN(x) \rangle$ and $Z(x) = \sum_{t \in V} \exp(z_t)$ is the partition function.
+
+When analyzing contributions to a *single* token's probability, computing the full partition function over the entire vocabulary is expensive and obscures the analysis. Can we simplify?
+
+### The Slowly-Varying Partition Function
+
+**Claim**: When focusing on a single token, the partition function $Z(x)$ can often be treated as approximately constant, reducing probability to:
+$$
+P(\text{token} | x) \approx c \cdot \exp(z_{\text{token}})
+$$
+
+where $c = 1/Z(x)$ varies slowly with $x$.
+
+**Justification**: The key observation is that:
+$$
+\frac{\partial \log Z}{\partial z_t} = P(t|x)
+$$
+
+This means:
+- Changes to **low-probability tokens** contribute negligibly to $\log Z$
+- Changes to **high-probability tokens** dominate
+
+The partition function is a log-sum-exp—a smooth approximation to $\max$. It's dominated by the top few logits. When decomposing contributions to a mid-ranked token's logit:
+
+1. Small perturbations to the residual change most logits proportionally
+2. $\log Z$ changes slowly unless perturbations specifically target the top tokens
+3. The proportionality constant $c$ absorbs the collective effect of all other tokens
+
+### When the Approximation Holds
+
+The approximation is useful when:
+- Analyzing **why a specific token** gets its probability (e.g., "Why does ' Dublin' have probability 0.03?")
+- Decomposing logit contributions across layers or components
+- Comparing relative contributions without needing exact probabilities
+
+The approximation breaks down when:
+- Perturbations are large enough to **reorder top tokens** significantly
+- Analysis is near **decision boundaries** where multiple tokens have similar probability
+- You need **exact probability values** rather than relative contributions
+
+### Implications for Interpretability
+
+This approximation justifies working primarily with **logits rather than probabilities** for attribution:
+
+$$
+z_{\text{token}}(x) = \langle \overline{\text{token}}, LN(x) \rangle
+$$
+
+Since $\log P \approx z - \text{const}$, changes in logit directly track changes in log-probability. This is why logit lens and direct logit attribution work—we can meaningfully interpret $\langle \overline{\text{token}}, x^i_j \rangle$ at intermediate layers without computing the full softmax normalization.
+
+For decomposition across residual contributions:
+$$
+z_{\text{token}} = \left\langle \overline{\text{token}}, LN\left(\sum_i \Delta x^i\right) \right\rangle
+$$
+
+The layer norm complicates exact decomposition, but the partition function doesn't add additional coupling—each component's contribution to the logit is meaningful on its own.
+
+### Aside: Inference Algorithms and the Full Distribution
+
+In practice, most LLM inference algorithms don't use the full softmax distribution anyway:
+
+| Strategy | Uses full softmax? | Description |
+|----------|-------------------|-------------|
+| **Greedy** | No | Always picks argmax |
+| **Top-k** | No | Keep top k tokens, renormalize, sample |
+| **Top-p (nucleus)** | No | Keep smallest set with cumulative prob > p |
+| **Min-p** | No | Keep tokens where $P(t) > p \cdot P(\text{top})$ |
+| **Temperature sampling** | Yes (at T=1) | Samples from full $P(t) \propto \exp(z_t / T)$ |
+
+Pure temperature sampling at T=1 follows the exact softmax, but production systems typically use truncation (top-k, top-p, min-p) to avoid occasionally sampling very low-probability tokens that produce incoherent output.
+
+This further justifies working with logits for interpretability: if inference itself ignores most of the distribution, the precise normalization matters even less. The model's actual behavior depends primarily on the relative ordering among top candidates, not the exact probability mass in the tail.
+
+The one context where $Z$ matters fully is computing **perplexity/loss during training**, where cross-entropy requires the true probability of the target token.
+
+---
 
 ## Functional Discourse Grammar
 
@@ -239,3 +326,4 @@ The open question: can we formalize "position $j$ acts as head of span $[a,b]$" 
 4. Should $T_2(c)$ mean block 2 alone, or blocks 1-2 composed? (Resolve via examples)
 5. Can "position $j$ is head of span $[a,b]$" be defined via attention/residual properties?
 6. Do multi-token words show characteristic attention or residual patterns?
+7. How much does $\log Z(x)$ actually vary across typical residual perturbations? Empirically measure the partition function stability for layer-by-layer and component-by-component decompositions.

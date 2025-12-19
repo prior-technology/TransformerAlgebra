@@ -179,6 +179,98 @@ def logits(residual: ResidualVector) -> LogitMapping:
     return LogitMapping(logits_tensor, residual)
 
 
+class ProbabilityMapping:
+    """A mapping from tokens to probabilities with symbolic representation.
+
+    Supports subscripting: predict(x)["Dublin"] returns the probability for Dublin.
+    """
+
+    def __init__(self, probs_tensor: torch.Tensor, logits_tensor: torch.Tensor,
+                 residual: ResidualVector):
+        self._probs = probs_tensor
+        self._logits = logits_tensor
+        self._residual = residual
+        self._transformer = residual.transformer
+
+    def __repr__(self):
+        return f"P(token | {self._residual})"
+
+    def __getitem__(self, token_text: str) -> "ProbabilityValue":
+        """Get the probability for a specific token."""
+        token_id = self._transformer.get_token_id(token_text)
+        prob = self._probs[token_id].item()
+        logit = self._logits[token_id].item()
+        return ProbabilityValue(prob, logit, token_text, self._residual)
+
+    def top_k(self, k: int = 5) -> list[tuple[str, float, float]]:
+        """Get the top-k tokens by probability.
+
+        Returns:
+            List of (token, probability, logit) tuples
+        """
+        values, indices = torch.topk(self._probs, k)
+        result = []
+        for p, idx in zip(values.tolist(), indices.tolist()):
+            token = self._transformer.tokenizer.decode([idx])
+            logit = self._logits[idx].item()
+            result.append((token, p, logit))
+        return result
+
+    def summary(self, k: int = 5) -> str:
+        """Return a formatted summary of top predictions."""
+        lines = [f"Top {k} predictions:"]
+        for i, (token, prob, logit) in enumerate(self.top_k(k), 1):
+            lines.append(f"  {i}. {token!r} ({prob:.2%}, logit={logit:.2f})")
+        return "\n".join(lines)
+
+    @property
+    def log_partition(self) -> float:
+        """The log partition function log(Z) for this distribution."""
+        return torch.logsumexp(self._logits, dim=0).item()
+
+
+class ProbabilityValue:
+    """A single probability value with symbolic representation.
+
+    Represents P(token | x) = softmax(<unembed(token), T(x)>).
+    """
+
+    def __init__(self, prob: float, logit: float, token_text: str,
+                 residual: ResidualVector):
+        self.prob = prob
+        self.logit = logit
+        self.token_text = token_text
+        self._residual = residual
+
+    def __repr__(self):
+        return f"P({self.token_text!r} | {self._residual}) = {self.prob:.2%}"
+
+    def __float__(self):
+        return self.prob
+
+    @property
+    def log_prob(self) -> float:
+        """Log probability (more numerically stable for small values)."""
+        return float(torch.log(torch.tensor(self.prob)).item())
+
+
+def predict(residual: ResidualVector) -> ProbabilityMapping:
+    """Compute next-token probabilities from a residual vector.
+
+    Applies softmax to logits to get a probability distribution over tokens.
+
+    Args:
+        residual: A ResidualVector from T(token)
+
+    Returns:
+        ProbabilityMapping that can be subscripted by token
+    """
+    normed = residual.normed
+    logits_tensor = residual.transformer._unembed(normed)
+    probs_tensor = torch.softmax(logits_tensor, dim=0)
+    return ProbabilityMapping(probs_tensor, logits_tensor, residual)
+
+
 class PromptedTransformer:
     """A transformer model with a specific prompt/context.
 

@@ -9,6 +9,9 @@ from .core import (
     LogitMapping,
     LogitValue,
     logits,
+    ProbabilityMapping,
+    ProbabilityValue,
+    predict,
 )
 from .interface import (
     ModelPath,
@@ -34,6 +37,9 @@ __all__ = [
     "LogitMapping",
     "LogitValue",
     "logits",
+    "ProbabilityMapping",
+    "ProbabilityValue",
+    "predict",
     # Interface types
     "ModelPath",
     "TokenRef",
