@@ -522,11 +522,8 @@ class TestModelLoading:
         assert torch.allclose(block_expanded.tensor, block_contrib.tensor, atol=1e-5)
 
     def test_multi_level_expand(self):
-        """Test expanding VectorSum to go deeper (Level 1 -> Level 2).
-
-        Note: This test verifies structure but not numerical equality.
-        See doc/expand_issues.md for known issues with multi-level sum.
-        """
+        """Test expanding VectorSum to go deeper (Level 1 -> Level 2)."""
+        import torch
         from transformer_algebra import (
             load_pythia_model, PromptedTransformer, expand,
             EmbeddingVector, AttentionContribution, MLPContribution, VectorSum,
@@ -556,9 +553,8 @@ class TestModelLoading:
             assert isinstance(level2[1 + 2*i], AttentionContribution)
             assert isinstance(level2[1 + 2*i + 1], MLPContribution)
 
-        # Note: The sum equality (level2.tensor == x.tensor) is a known issue.
-        # Individual block expansions work correctly, but cumulative multi-level
-        # expansion has a discrepancy. See doc/expand_issues.md for details.
+        # Sum of all Level 2 terms should equal original residual
+        assert torch.allclose(level2.tensor, x.tensor, atol=1e-5)
 
     def test_expand_repr(self):
         """Test that expanded forms have meaningful string representations."""

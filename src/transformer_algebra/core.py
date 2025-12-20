@@ -645,18 +645,19 @@ class PromptedTransformer:
         """Apply the transformer to a token or embedding vector.
 
         T is a nonlinear operator mapping embed(token) → T(embed(token)).
+        T^i means running the first i blocks (without final layer norm).
 
         Args:
             token: Either a token string (e.g., " is") or an EmbeddingVector
             layer: Which layer's residual to return (-1 = final, default)
 
         Returns:
-            ResidualVector representing T^layer(embed(token))
+            ResidualVector representing T^layer(embed(token)) - the pre-LN residual
 
         Example:
             >>> T = PromptedTransformer(model, tokenizer, "The capital of Ireland")
-            >>> T(" is")           # shorthand
-            >>> T(T.embed(" is"))  # explicit embedding
+            >>> T(" is")           # shorthand - returns pre-LN residual
+            >>> T(" is").normed    # apply final layer norm
         """
         # Handle both string and EmbeddingVector inputs
         if isinstance(token, EmbeddingVector):
@@ -674,7 +675,15 @@ class PromptedTransformer:
         # Get residual at specified layer
         if layer == -1:
             layer = self.config.n_layers
-        residual_tensor = outputs.hidden_states[layer][0, -1, :]
+
+        # HuggingFace hidden_states[n_layers] is POST final_layer_norm, but we want
+        # pre-LN residuals for consistent block contribution semantics.
+        # Compute the true pre-LN residual for the final layer.
+        hidden_states = self._compute_pre_ln_hidden_states(
+            outputs.hidden_states, extended_tokens
+        )
+
+        residual_tensor = hidden_states[layer][0, -1, :]
 
         return ResidualVector(
             tensor=residual_tensor,
@@ -682,7 +691,7 @@ class PromptedTransformer:
             layer=layer,
             position=-1,
             token_text=token_text,
-            hidden_states=outputs.hidden_states,  # Cache for expand()
+            hidden_states=hidden_states,  # Cache for expand()
         )
 
     def _tokenize(self, text: str) -> TokenInfo:
@@ -698,6 +707,69 @@ class PromptedTransformer:
         with torch.no_grad():
             outputs = self.model(**tokens, output_hidden_states=True)
         return outputs.hidden_states, outputs
+
+    def _compute_pre_ln_hidden_states(
+        self,
+        hf_hidden_states: tuple[torch.Tensor, ...],
+        tokens: dict,
+    ) -> tuple[torch.Tensor, ...]:
+        """Compute hidden states with pre-LN final residual.
+
+        HuggingFace GPT-NeoX returns hidden_states[n_layers] as POST final_layer_norm,
+        but for consistent block contribution semantics, we need the PRE-LN residual.
+
+        This method computes the true pre-LN final residual by running the last
+        block manually on hidden_states[n_layers-1].
+
+        Args:
+            hf_hidden_states: Hidden states from HuggingFace model
+            tokens: Tokenized input for attention mask
+
+        Returns:
+            Tuple of hidden states where all entries are pre-LN residuals
+        """
+        n_layers = self.config.n_layers
+
+        # hidden_states[0..n_layers-1] are already pre-LN (raw residuals)
+        # hidden_states[n_layers] is post-LN, we need to recompute it
+
+        # Get the residual before the last block
+        h_before_last = hf_hidden_states[n_layers - 1]
+
+        # Run the last block to get the pre-LN output
+        last_block = self.model.gpt_neox.layers[n_layers - 1]
+
+        with torch.no_grad():
+            # GPT-NeoX parallel architecture
+            attn_ln_out = last_block.input_layernorm(h_before_last)
+            mlp_ln_out = last_block.post_attention_layernorm(h_before_last)
+
+            # Compute position embeddings for attention
+            seq_len = h_before_last.shape[1]
+            attention_mask = tokens.get('attention_mask')
+            if attention_mask is None:
+                attention_mask = torch.ones(1, seq_len, device=h_before_last.device)
+            attention_mask = attention_mask.float()
+            position_ids = torch.arange(seq_len, device=h_before_last.device).unsqueeze(0)
+            position_embeddings = self.model.gpt_neox.rotary_emb(attn_ln_out, position_ids)
+
+            # Run attention
+            attn_output = last_block.attention(
+                attn_ln_out,
+                attention_mask=attention_mask,
+                position_embeddings=position_embeddings,
+            )[0]
+
+            # Run MLP
+            mlp_output = last_block.mlp(mlp_ln_out)
+
+            # Parallel residual: h_new = h + attn + mlp
+            h_pre_ln_final = h_before_last + attn_output + mlp_output
+
+        # Build corrected hidden states tuple
+        # Keep hidden_states[0..n_layers-1] as-is, replace hidden_states[n_layers]
+        corrected = list(hf_hidden_states[:n_layers]) + [h_pre_ln_final]
+        return tuple(corrected)
 
     def get_token_id(self, token_text: str) -> int:
         """Get the token ID for a piece of text (should be a single token).
