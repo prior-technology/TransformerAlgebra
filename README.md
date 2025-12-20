@@ -58,6 +58,7 @@ See `doc/roadmap.md` for detailed planning.
 
 ### Phase 1: Richer Extraction (Python)
 
+- [ ] **Implement attribution** - Show how each term in an expanded vector sum contributes to the likelihood of a target token (inner product with unembedding vector)
 - [ ] **Extract per-block contributions** - Add `get_attention_contributions()` and `get_mlp_contributions()` methods
 - [ ] **Named vector registry** - Create `EmbeddingSpace` and `UnembeddingSpace` classes for token → vector lookup
 - [ ] **Symbolic inner products** - Format output as `⟨Dublin̄, x₅¹²⟩ = 0.89` instead of raw logits
