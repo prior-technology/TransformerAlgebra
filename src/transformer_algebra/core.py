@@ -894,28 +894,33 @@ class PromptedTransformer:
 # =============================================================================
 
 class ContributionResult:
-    """Result of contribution analysis showing how each term affects a token's logit.
+    """Result of contribution analysis showing how each term affects an inner product.
 
-    Displays how terms in an expanded vector sum contribute to the logit
-    for a specific target token.
+    Displays how terms in an expanded vector sum contribute to an inner product
+    like a logit ⟨unembed(token), LN(x)⟩.
     """
 
     def __init__(
         self,
-        target_token: str,
+        inner_product: "LogitValue",
         terms: list[VectorLike],
         raw_contributions: list[float],
         percentages: list[float],
         total_raw: float,
     ):
-        self.target_token = target_token
+        self.inner_product = inner_product
         self.terms = terms
         self.raw_contributions = raw_contributions
         self.percentages = percentages
         self.total_raw = total_raw
 
+    @property
+    def target_token(self) -> str:
+        """The target token (for logit inner products)."""
+        return self.inner_product.token_text
+
     def __repr__(self):
-        lines = [f"Contributions to {self.target_token!r}:"]
+        lines = [f"Contributions to {self.inner_product!r}:"]
         for term, raw, pct in zip(self.terms, self.raw_contributions, self.percentages):
             sign = "+" if raw >= 0 else ""
             lines.append(f"  {repr(term)}: {sign}{raw:.2f} ({pct:+.1%})")
@@ -944,21 +949,21 @@ class ContributionResult:
         return "\n".join(lines)
 
 
-def contribution(expanded: VectorSum, target_token: str) -> ContributionResult:
-    """Compute how each term in an expanded vector contributes to a token's logit.
+def contribution(expanded: VectorSum, inner_product: LogitValue) -> ContributionResult:
+    """Compute how each term in an expanded vector contributes to an inner product.
 
-    Given an expanded residual (from expand()) and a target token, computes
-    each term's contribution to the final logit for that token.
+    Given an expanded residual (from expand()) and an inner product (like a logit),
+    computes each term's contribution to the final value.
 
-    The logit decomposes as:
-        z_t = (1/σ) * Σᵢ cᵢ + bias
+    The inner product ⟨u, LN(Σᵢ xᵢ)⟩ decomposes as:
+        value = (1/σ) * Σᵢ cᵢ + bias
     where cᵢ = ⟨u ⊙ γ, xᵢ - μᵢ⟩
 
     See doc/contribution.md and doc/analysis/speculation.md for mathematical details.
 
     Args:
         expanded: A VectorSum from expand(residual)
-        target_token: Token to compute contributions for (e.g., " Dublin")
+        inner_product: A LogitValue from logits(x)[token]
 
     Returns:
         ContributionResult with breakdown by term
@@ -967,24 +972,23 @@ def contribution(expanded: VectorSum, target_token: str) -> ContributionResult:
         >>> T = PromptedTransformer(model, tokenizer, "The capital of Ireland")
         >>> x = T(" is")
         >>> ex = expand(x)
-        >>> contrib = contribution(ex, " Dublin")
+        >>> logit = logits(x)[" Dublin"]
+        >>> contrib = contribution(ex, logit)
         >>> print(contrib.summary())
     """
     if not isinstance(expanded, VectorSum):
         raise TypeError(f"Expected VectorSum, got {type(expanded).__name__}")
 
+    if not isinstance(inner_product, LogitValue):
+        raise TypeError(
+            f"Expected LogitValue (from logits(x)[token]), got {type(inner_product).__name__}"
+        )
+
     if len(expanded.terms) == 0:
         raise ValueError("VectorSum has no terms")
 
-    # Get transformer reference from first term
-    first_term = expanded.terms[0]
-    if hasattr(first_term, 'transformer'):
-        transformer = first_term.transformer
-    else:
-        raise ValueError(
-            f"Cannot get transformer from term {type(first_term).__name__}. "
-            "Terms must have a 'transformer' attribute."
-        )
+    # Get transformer from the inner product's residual
+    transformer = inner_product._residual.transformer
 
     # Get layer norm parameters (γ, β)
     final_ln = transformer._final_ln
@@ -992,7 +996,7 @@ def contribution(expanded: VectorSum, target_token: str) -> ContributionResult:
     # beta = final_ln.bias.detach()  # [d_model] - constant term, reported separately
 
     # Get unembedding vector for target token
-    token_id = transformer.get_token_id(target_token)
+    token_id = transformer.get_token_id(inner_product.token_text)
     unembed_matrix = transformer._unembed.weight  # [vocab_size, d_model]
     u = unembed_matrix[token_id, :].detach()  # [d_model]
 
@@ -1017,7 +1021,7 @@ def contribution(expanded: VectorSum, target_token: str) -> ContributionResult:
         percentages = [c / total_raw for c in raw_contributions]
 
     return ContributionResult(
-        target_token=target_token,
+        inner_product=inner_product,
         terms=list(expanded.terms),
         raw_contributions=raw_contributions,
         percentages=percentages,
