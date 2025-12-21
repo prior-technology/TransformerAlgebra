@@ -471,9 +471,35 @@ For communication between Python and Julia (when not using PythonCall directly).
 }
 ```
 
-### HDF5 for Bulk Data
+### HDF5 Export Format
 
-When Julia needs actual tensor values, Python can write to HDF5:
+When Julia needs actual tensor values, Python exports to HDF5. This is the primary data exchange format for SymbolicTransformer integration.
+
+#### Required Data
+
+| Field | Shape | Description |
+|-------|-------|-------------|
+| `residuals` | (layers+1, positions, d_model) | All residual vectors |
+| `attention_contributions` | (layers, heads, positions, d_model) | Per-head output at each position |
+| `mlp_contributions` | (layers, positions, d_model) | MLP output at each position |
+| `tokens` | (positions,) | Token strings |
+| `token_ids` | (positions,) | Token IDs |
+
+#### Optional Data (large, load on demand)
+
+| Field | Shape | Description |
+|-------|-------|-------------|
+| `embeddings` | (vocab_size, d_model) | Full embedding matrix |
+| `unembeddings` | (vocab_size, d_model) | Full unembedding matrix |
+| `attention_patterns` | (layers, heads, positions, positions) | Full attention weights |
+
+#### Metadata
+
+- Model name and config (layers, heads, d_model)
+- Prompt text
+- Indexing conventions (0-based, dimension order)
+
+#### File Structure
 
 ```
 /context_{id}/
@@ -482,6 +508,19 @@ When Julia needs actual tensor values, Python can write to HDF5:
     /attention_contribs # (n_layers, n_heads, n_positions, d_model)
     /mlp_contribs      # (n_layers, n_positions, d_model)
 ```
+
+---
+
+## What SymbolicTransformer Must Provide
+
+TransformerAlgebra expects SymbolicTransformer to provide:
+
+1. **Import capability** - Load the HDF5 export format defined above
+2. **Named vector display** - Vectors labeled with token-based names (e.g., `Dublin̄`, `x₅¹²`)
+3. **Inner product display** - Format `⟨left, right⟩ = value` with symbolic names
+4. **Decomposition view** - Given a residual, show its components with operator/layer labels
+
+Implementation details are the responsibility of SymbolicTransformer.
 
 ---
 

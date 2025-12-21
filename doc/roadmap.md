@@ -142,59 +142,12 @@ Julia builds expressions from these refs and calls Python to resolve them.
 
 ### Phase 2: Export Format (Python → Julia)
 
-6. **Define serialization format** (see Interface Contract below)
+6. **Define serialization format** - See `interface.md` for HDF5 export format and data contract
 
 7. **Python export function**
    ```python
    lens.export("analysis.h5", prompt, include_attention=True, include_mlp=True)
    ```
-
----
-
-## Interface Contract: What TransformerAlgebra Exports
-
-SymbolicTransformer will consume data exported by TransformerAlgebra. The export format provides:
-
-### Required Data
-
-| Field | Shape | Description |
-|-------|-------|-------------|
-| `residuals` | (layers+1, positions, d_model) | All residual vectors |
-| `attention_contributions` | (layers, heads, positions, d_model) | Per-head output at each position |
-| `mlp_contributions` | (layers, positions, d_model) | MLP output at each position |
-| `tokens` | (positions,) | Token strings |
-| `token_ids` | (positions,) | Token IDs |
-
-### Optional Data (large, load on demand)
-
-| Field | Shape | Description |
-|-------|-------|-------------|
-| `embeddings` | (vocab_size, d_model) | Full embedding matrix |
-| `unembeddings` | (vocab_size, d_model) | Full unembedding matrix |
-| `attention_patterns` | (layers, heads, positions, positions) | Full attention weights |
-
-### Metadata
-
-- Model name and config (layers, heads, d_model)
-- Prompt text
-- Indexing conventions (0-based, dimension order)
-
-### Format
-
-HDF5 for efficient cross-language tensor storage.
-
----
-
-## What TransformerAlgebra Needs FROM SymbolicTransformer
-
-TransformerAlgebra expects SymbolicTransformer to provide:
-
-1. **Import capability** - Load the HDF5 export format defined above
-2. **Named vector display** - Vectors labeled with token-based names (e.g., `Dublin̄`, `x₅¹²`)
-3. **Inner product display** - Format `⟨left, right⟩ = value` with symbolic names
-4. **Decomposition view** - Given a residual, show its components with operator/layer labels
-
-Implementation details are the responsibility of SymbolicTransformer.
 
 ---
 
