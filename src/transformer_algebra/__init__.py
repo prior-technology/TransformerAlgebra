@@ -23,6 +23,9 @@ from .core import (
     predict,
     # Functions
     expand,
+    # Contribution analysis
+    ContributionResult,
+    contribution,
 )
 from .interface import (
     ModelPath,
@@ -61,6 +64,9 @@ __all__ = [
     "predict",
     # Functions
     "expand",
+    # Contribution analysis
+    "ContributionResult",
+    "contribution",
     # Interface types
     "ModelPath",
     "TokenRef",

@@ -887,3 +887,139 @@ class PromptedTransformer:
             mlp_contribution = block.mlp(mlp_ln_out)[0, position, :]
 
         return attn_contribution, mlp_contribution
+
+
+# =============================================================================
+# Contribution Analysis
+# =============================================================================
+
+class ContributionResult:
+    """Result of contribution analysis showing how each term affects a token's logit.
+
+    Displays how terms in an expanded vector sum contribute to the logit
+    for a specific target token.
+    """
+
+    def __init__(
+        self,
+        target_token: str,
+        terms: list[VectorLike],
+        raw_contributions: list[float],
+        percentages: list[float],
+        total_raw: float,
+    ):
+        self.target_token = target_token
+        self.terms = terms
+        self.raw_contributions = raw_contributions
+        self.percentages = percentages
+        self.total_raw = total_raw
+
+    def __repr__(self):
+        lines = [f"Contributions to {self.target_token!r}:"]
+        for term, raw, pct in zip(self.terms, self.raw_contributions, self.percentages):
+            sign = "+" if raw >= 0 else ""
+            lines.append(f"  {repr(term)}: {sign}{raw:.2f} ({pct:+.1%})")
+        lines.append(f"  Total: {self.total_raw:.2f}")
+        return "\n".join(lines)
+
+    def __len__(self):
+        return len(self.terms)
+
+    def __iter__(self):
+        """Iterate over (term, raw_contribution, percentage) tuples."""
+        return zip(self.terms, self.raw_contributions, self.percentages)
+
+    def top_k(self, k: int = 5) -> list[tuple[VectorLike, float, float]]:
+        """Return the k terms with largest absolute contribution."""
+        items = list(zip(self.terms, self.raw_contributions, self.percentages))
+        items.sort(key=lambda x: abs(x[1]), reverse=True)
+        return items[:k]
+
+    def summary(self, k: int = 5) -> str:
+        """Return a formatted summary of top contributions."""
+        lines = [f"Top {k} contributions to {self.target_token!r}:"]
+        for term, raw, pct in self.top_k(k):
+            sign = "+" if raw >= 0 else ""
+            lines.append(f"  {repr(term)}: {sign}{raw:.2f} ({pct:+.1%})")
+        return "\n".join(lines)
+
+
+def contribution(expanded: VectorSum, target_token: str) -> ContributionResult:
+    """Compute how each term in an expanded vector contributes to a token's logit.
+
+    Given an expanded residual (from expand()) and a target token, computes
+    each term's contribution to the final logit for that token.
+
+    The logit decomposes as:
+        z_t = (1/σ) * Σᵢ cᵢ + bias
+    where cᵢ = ⟨u ⊙ γ, xᵢ - μᵢ⟩
+
+    See doc/contribution.md and doc/analysis/speculation.md for mathematical details.
+
+    Args:
+        expanded: A VectorSum from expand(residual)
+        target_token: Token to compute contributions for (e.g., " Dublin")
+
+    Returns:
+        ContributionResult with breakdown by term
+
+    Example:
+        >>> T = PromptedTransformer(model, tokenizer, "The capital of Ireland")
+        >>> x = T(" is")
+        >>> ex = expand(x)
+        >>> contrib = contribution(ex, " Dublin")
+        >>> print(contrib.summary())
+    """
+    if not isinstance(expanded, VectorSum):
+        raise TypeError(f"Expected VectorSum, got {type(expanded).__name__}")
+
+    if len(expanded.terms) == 0:
+        raise ValueError("VectorSum has no terms")
+
+    # Get transformer reference from first term
+    first_term = expanded.terms[0]
+    if hasattr(first_term, 'transformer'):
+        transformer = first_term.transformer
+    else:
+        raise ValueError(
+            f"Cannot get transformer from term {type(first_term).__name__}. "
+            "Terms must have a 'transformer' attribute."
+        )
+
+    # Get layer norm parameters (γ, β)
+    final_ln = transformer._final_ln
+    gamma = final_ln.weight.detach()  # [d_model]
+    # beta = final_ln.bias.detach()  # [d_model] - constant term, reported separately
+
+    # Get unembedding vector for target token
+    token_id = transformer.get_token_id(target_token)
+    unembed_matrix = transformer._unembed.weight  # [vocab_size, d_model]
+    u = unembed_matrix[token_id, :].detach()  # [d_model]
+
+    # Precompute u ⊙ γ (element-wise product)
+    u_gamma = u * gamma  # [d_model]
+
+    # Compute contribution for each term
+    raw_contributions = []
+    for term in expanded.terms:
+        x_i = term.tensor.detach()  # [d_model]
+        mu_i = x_i.mean()  # scalar
+        centered = x_i - mu_i  # [d_model]
+        c_i = torch.dot(u_gamma, centered).item()  # scalar
+        raw_contributions.append(c_i)
+
+    # Compute total and percentages
+    total_raw = sum(raw_contributions)
+    if abs(total_raw) < 1e-10:
+        # Avoid division by zero - all contributions negligible
+        percentages = [0.0] * len(raw_contributions)
+    else:
+        percentages = [c / total_raw for c in raw_contributions]
+
+    return ContributionResult(
+        target_token=target_token,
+        terms=list(expanded.terms),
+        raw_contributions=raw_contributions,
+        percentages=percentages,
+        total_raw=total_raw,
+    )

@@ -25,6 +25,8 @@ class TestImports:
             MLPContribution,
             VectorSum,
             expand,
+            ContributionResult,
+            contribution,
         )
         assert EmbeddingVector is not None
         assert ResidualVector is not None
@@ -33,6 +35,8 @@ class TestImports:
         assert MLPContribution is not None
         assert VectorSum is not None
         assert expand is not None
+        assert ContributionResult is not None
+        assert contribution is not None
 
     def test_interface_imports(self):
         from transformer_algebra import (
