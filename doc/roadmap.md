@@ -113,30 +113,31 @@ Julia builds expressions from these refs and calls Python to resolve them.
    - `predict(x)` computes softmax probabilities
    - `summary()` methods format top-k predictions
 
-2. **Implement `expand()`** ← NEXT
-   - Converts between compact and expanded forms (see `doc/notation.md`):
-     ```
-     Compact:  LN(T(embed(' is')))
-     Expanded: LN(embed(' is') + Δx^0 + Δx^1 + ... + Δx^{n-1})
-     ```
-   - Each Δx^i = T^{i+1}(x) - T^i(x) is the contribution from block i
-   - Requires extracting per-block contributions (attention + MLP)
-   - Each term should be a referenceable object for further analysis
-   - Key relation: `<x, LN(a + b)> = (<x,a> + <x,b>) / ||a+b||`
+2. ~~**Implement `expand()`**~~ ✓ DONE (Level 1 & 2)
+   - Level 1: `T(x)` → `embed(x) + Δx^0 + Δx^1 + ... + Δx^{n-1}`
+   - Level 2: `Δx^i` → `Δx^i_A + Δx^i_M` (attention + MLP)
+   - Each term is a referenceable VectorLike object
+   - Sums verified mathematically exact
+   - See `doc/expand_issues.md` for implementation details
 
-3. **Implement contribution analysis**
-   - Given an expanded vector sum and a target token, show how each term contributes to the token's likelihood
-   - Compute inner product of each term with the unembedding vector: `⟨token̄, Δx^i⟩`
-   - Display contributions as a ranked list or table showing magnitudes
-   - Enable questions like "which block most increased/decreased the probability of this token?"
-   - See `doc/contribution.md` for detailed design
+3. ~~**Implement contribution analysis**~~ ✓ DONE
+   - `contribution(expanded, logit)` shows how each term contributes to an inner product
+   - Display as ranked list with `summary()` and `top_k()`
+   - Experimental finding: final block dominates (~95%) for all predictions
+   - See `doc/contribution.md` for design and results
 
-4. **Extract per-block contributions** (supports expand and contribution analysis)
-   - Add method to get attention output per head: `get_attention_contributions()`
-   - Add method to get MLP output per block: `get_mlp_contributions()`
-   - Cache all intermediate residuals with position/layer metadata
+4. **Expand Level 3: Per-head attention** ← NEXT
+   - `Δx^i_A` → `Σ_h Δx^{i,h}_A` (per-head contributions)
+   - Enables head-level attribution to understand which heads matter
+   - May reveal where context integration actually occurs
 
-5. **Named vector registry** (lower priority)
+5. **Track position embedding contributions**
+   - Separate position embedding from token embedding in expansion
+   - Currently `embed(token)` includes both; should be `embed(token) + pos(j)`
+   - Enables questions like "how much does position vs token identity matter?"
+   - Pythia uses rotary embeddings (RoPE) which complicates this—position is applied per-head in attention, not added to embeddings
+
+6. **Named vector registry** (lower priority)
    - Optional: `embed["Dublin"]`, `unembed["Dublin"]` syntax
    - Current subscripting via `logits(x)[token]` may be sufficient
 
