@@ -54,7 +54,7 @@ Throughout the development process, the results should be validated against expe
 
 ## Next Steps
 
-- Implement attribution for expanded terms
+- Implement contribution analysis for expanded terms
 - Extract per-block contributions
 - Export to Julia via HDF5
 

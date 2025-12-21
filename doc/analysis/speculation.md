@@ -277,10 +277,10 @@ where $c_i = \langle u_t \odot \gamma, x_i - \mu(x_i) \rangle$ is the raw contri
 
 ### The Shared Scaling Factor
 
-The standard deviation $\sigma = \text{std}(\sum_i x_i)$ depends on all terms together—it's a **shared scaling factor** that doesn't affect relative attribution:
+The standard deviation $\sigma = \text{std}(\sum_i x_i)$ depends on all terms together—it's a **shared scaling factor** that doesn't affect relative contributions:
 
 $$
-\text{attribution}(x_i) = \frac{c_i}{\sum_j c_j}
+\text{contribution}(x_i) = \frac{c_i}{\sum_j c_j}
 $$
 
 This ratio is independent of $\sigma$.
@@ -297,7 +297,7 @@ The norm $\|x\| = \sqrt{d} \cdot \sigma$ when $\mu = 0$, so this is equivalent u
 
 **Interpretation:** The individual inner products $\langle u, a_i \rangle$ are **additive contributions** to the numerator, and the shared denominator $\|\sum_i a_i\|$ normalizes them.
 
-### Implications for Attribution
+### Implications for Contribution Analysis
 
 1. **Linearity is preserved** in the numerator—contributions from different terms sum
 2. **The scaling is shared**—relative contributions are well-defined

@@ -124,14 +124,14 @@ Julia builds expressions from these refs and calls Python to resolve them.
    - Each term should be a referenceable object for further analysis
    - Key relation: `<x, LN(a + b)> = (<x,a> + <x,b>) / ||a+b||`
 
-3. **Implement attribution**
+3. **Implement contribution analysis**
    - Given an expanded vector sum and a target token, show how each term contributes to the token's likelihood
    - Compute inner product of each term with the unembedding vector: `⟨token̄, Δx^i⟩`
-   - Display attribution as a ranked list or table showing contribution magnitudes
+   - Display contributions as a ranked list or table showing magnitudes
    - Enable questions like "which block most increased/decreased the probability of this token?"
-   - See `doc/attribution.md` for detailed design
+   - See `doc/contribution.md` for detailed design
 
-4. **Extract per-block contributions** (supports expand and attribution)
+4. **Extract per-block contributions** (supports expand and contribution analysis)
    - Add method to get attention output per head: `get_attention_contributions()`
    - Add method to get MLP output per block: `get_mlp_contributions()`
    - Cache all intermediate residuals with position/layer metadata

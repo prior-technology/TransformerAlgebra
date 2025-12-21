@@ -1,10 +1,10 @@
-# Attribution
+# Contribution Analysis
 
-The `attribute` function calculates the significance of each term in an expanded expression to the logit (and thus probability) of a target token.
+The `contribution` function shows how each term in an expanded expression contributes to the logit (and thus probability) of a target token.
 
 ## Notation
 
-We define `▷` to represent attribution. If `x = Σᵢ xᵢ` (an expanded residual):
+We define `▷` as the contribution operator. If `x = Σᵢ xᵢ` (an expanded residual):
 
 ```
 x ▷ t = { x₀: 20%, x₁: 2%, x₂: 50%, ... }
@@ -14,13 +14,22 @@ reads as: "for token t, term x₀ contributes 20% of the logit, x₁ contributes
 
 ## API
 
+The contribution function acts on an expanded expression:
+
 ```python
 T = PromptedTransformer(model, tokenizer, "The capital of Ireland")
-x = T(" is")                    # Pre-LN residual
-ex = expand(x)                  # embed(' is') + Δx^0 + ... + Δx^{n-1}
-attr = attribute(ex, " Dublin") # Compute attribution
-print(attr)
+x = T(" is")                           # Pre-LN residual
+p = predict(x)[" Dublin"]              # ProbabilityValue for Dublin
+contrib = contribution(expand(p))      # Contribution breakdown
+print(contrib)
 # T(x) ▷ ' Dublin' { embed(' is'): 12%, Δx^0: -2%, Δx^7: 42%, ... }
+```
+
+Or starting from logits:
+
+```python
+logit = logits(x)[" Dublin"]           # LogitValue for Dublin
+contrib = contribution(expand(logit))  # Contribution breakdown
 ```
 
 ## Why This Works
@@ -30,7 +39,7 @@ See `analysis/speculation.md` § "Single-Token Probability Approximation" and "L
 **Summary:**
 1. The partition function Z(x) varies slowly, so `log P(t) ≈ logit(t) - const`
 2. The logit decomposes through layer norm as a **scaled sum** of per-term contributions
-3. The scaling factor σ is shared, so relative attribution is preserved
+3. The scaling factor σ is shared, so relative contributions are preserved
 
 ## Implementation Steps
 
@@ -41,7 +50,7 @@ For target token t and expanded residual `x = Σᵢ xᵢ`:
 3. **For each term xᵢ**:
    - Compute mean: `μᵢ = mean(xᵢ)`
    - Compute raw contribution: `cᵢ = ⟨u ⊙ γ, xᵢ - μᵢ⟩`
-4. **Normalize**: `attribution(xᵢ) = cᵢ / Σⱼ cⱼ`
+4. **Normalize**: `contribution(xᵢ) = cᵢ / Σⱼ cⱼ`
 
 The bias term `⟨u, β⟩` is constant across the expansion and can be reported separately.
 
@@ -49,7 +58,7 @@ The bias term `⟨u, β⟩` is constant across the expansion and can be reported
 
 **Prompt**: "The capital of Ireland is"
 
-For the token " Dublin", we expect the prediction to depend heavily on the context "Ireland", not just the immediate token " is". The attribution should show significant contributions from later blocks that have processed the attention to "Ireland".
+For the token " Dublin", we expect the prediction to depend heavily on the context "Ireland", not just the immediate token " is". The contributions should show significant values from later blocks that have processed the attention to "Ireland".
 
 ```
 T(" is") ▷ ' Dublin' {
@@ -86,7 +95,7 @@ T("un") ▷ 'likely' {
 
 ## Example 3: Comparing Tokens
 
-The same residual can be attributed to different target tokens:
+The same residual can show different contribution patterns for different target tokens:
 
 ```
 T(" is") ▷ ' Dublin' { embed: 12%, Δx^7: 42%, ... }
@@ -101,4 +110,4 @@ Common tokens like " the" and " a" may be predicted more by the embedding (they 
 1. Should negative contributions be displayed differently? (A term can push away from a token)
 2. How to handle very small total contributions (near-zero logit)?
 3. Should we also report the raw contribution values, not just percentages?
-4. Shapley values for probability (not logit) attribution—when is this needed?
+4. Shapley values for probability (not logit) contribution—when is this needed?
