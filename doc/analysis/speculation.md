@@ -232,12 +232,77 @@ $$
 
 Since $\log P \approx z - \text{const}$, changes in logit directly track changes in log-probability. This is why logit lens and direct logit attribution work—we can meaningfully interpret $\langle \overline{\text{token}}, x^i_j \rangle$ at intermediate layers without computing the full softmax normalization.
 
-For decomposition across residual contributions:
+### Logit Decomposition Through Layer Norm
+
+For decomposition across residual contributions, consider:
 $$
-z_{\text{token}} = \left\langle \overline{\text{token}}, LN\left(\sum_i \Delta x^i\right) \right\rangle
+z_{\text{token}} = \left\langle \overline{\text{token}}, LN\left(\sum_i x_i\right) \right\rangle
 $$
 
-The layer norm complicates exact decomposition, but the partition function doesn't add additional coupling—each component's contribution to the logit is meaningful on its own.
+where $x = \sum_i x_i$ is the expanded residual (embedding + block contributions).
+
+**Layer norm definition:**
+$$
+LN(x) = \gamma \odot \frac{x - \mu(x)}{\sigma(x)} + \beta
+$$
+
+where $\mu(x) = \text{mean}(x)$ and $\sigma(x) = \text{std}(x)$.
+
+**Key property: The mean is linear.**
+$$
+\mu\left(\sum_i x_i\right) = \sum_i \mu(x_i)
+$$
+
+This means the centered residual also decomposes:
+$$
+x - \mu(x) = \sum_i x_i - \sum_i \mu(x_i) = \sum_i (x_i - \mu(x_i))
+$$
+
+**Expanding the inner product:**
+$$
+\langle u, LN(x) \rangle = \frac{1}{\sigma} \langle u \odot \gamma, x - \mu \rangle + \langle u, \beta \rangle
+$$
+
+Substituting the decomposition:
+$$
+\langle u \odot \gamma, x - \mu \rangle = \sum_i \langle u \odot \gamma, x_i - \mu(x_i) \rangle
+$$
+
+**Result: The logit IS a scaled sum of per-term contributions:**
+$$
+z_t = \frac{1}{\sigma} \sum_i c_i + \langle u_t, \beta \rangle
+$$
+
+where $c_i = \langle u_t \odot \gamma, x_i - \mu(x_i) \rangle$ is the raw contribution from term $i$.
+
+### The Shared Scaling Factor
+
+The standard deviation $\sigma = \text{std}(\sum_i x_i)$ depends on all terms together—it's a **shared scaling factor** that doesn't affect relative attribution:
+
+$$
+\text{attribution}(x_i) = \frac{c_i}{\sum_j c_j}
+$$
+
+This ratio is independent of $\sigma$.
+
+### Simplified Identity
+
+When the mean is small (or we work with centered quantities), and absorbing $\gamma$ and ignoring $\beta$:
+
+$$
+\langle u, LN(\sum_i a_i) \rangle \approx \frac{\sum_i \langle u, a_i \rangle}{\|\sum_i a_i\|}
+$$
+
+The norm $\|x\| = \sqrt{d} \cdot \sigma$ when $\mu = 0$, so this is equivalent up to a constant.
+
+**Interpretation:** The individual inner products $\langle u, a_i \rangle$ are **additive contributions** to the numerator, and the shared denominator $\|\sum_i a_i\|$ normalizes them.
+
+### Implications for Attribution
+
+1. **Linearity is preserved** in the numerator—contributions from different terms sum
+2. **The scaling is shared**—relative contributions are well-defined
+3. **The bias term** $\langle u, \beta \rangle$ is constant across the expansion (token-dependent but not residual-dependent)
+4. **No Shapley needed for logits**—the decomposition is exact, not approximated
 
 ### Aside: Inference Algorithms and the Full Distribution
 
