@@ -5,7 +5,7 @@ Exploratory ideas and work-in-progress thinking about transformer internals.
 - [Residual Space Structure](#residual-space-structure)
 - [Geometric Decomposition of Transformer Components](#geometric-decomposition-of-transformer-components)
 - [Single-Token Probability Approximation](#single-token-probability-approximation)
-- [Logit Decomposition Through Layer Norm](#logit-decomposition-through-layer-norm)
+- [Inner Product Decomposition Through Layer Norm](#inner-product-decomposition-through-layer-norm)
 - [Functional Discourse Grammar](#functional-discourse-grammar)
 - [Open Questions](#open-questions)
 
@@ -154,7 +154,7 @@ In practice, most LLM inference algorithms don't use the full softmax distributi
 Pure temperature sampling at T=1 follows the exact softmax, but production systems typically use truncation (top-k, top-p, min-p) to avoid occasionally sampling very low-probability tokens that produce incoherent output. The model's typical behavior depends primarily on the relative ordering among top candidates, not the exact probability mass in the tail.
 
 
-## Logit Decomposition Through Layer Norm
+## Inner Product Decomposition Through Layer Norm
 
 For decomposition across residual contributions, consider:
 $$
@@ -164,13 +164,13 @@ $$
 where $z_{\text{token}}$ is the logit, $\overline{t}$ is the row of the unembedding layer corresponding with the token, $\mathrm{LN}$ is layer normalisation, including $\gamma$ and $\beta$ parameters and $x = \sum_i x_i$ is the expanded residual (embedding + block contributions).
 
 Layer normalisation with learned parameters is:
-$$\mathrm{LN}(x) = \gamma \odot \frac{P(x)}{|P(x)|} + \beta$$
+$$\mathrm{LN}(x) = \gamma \odot \left(\sqrt{N}\frac{P(x)}{|P(x)|}\right) + \beta$$
 
 where $P(x) = x - (x \cdot \vec{1})\vec{1}$ is the mean-centering projection.
 
 ### Step 1: Separate the β term
 
-$$z_{\text{token}} = \left\langle \bar{t}, \gamma \odot \frac{P(x)}{|P(x)|} \right\rangle + \langle \bar{t}, \beta \rangle$$
+$$z_{\text{token}} = \left\langle \bar{t}, \gamma \odot \left(\sqrt{N}\frac{P(x)}{|P(x)|}\right) \right\rangle + \langle \bar{t}, \beta \rangle$$
 
 The second term is a constant (for fixed token), call it $b_t = \bar{t} \cdot \beta$.
 
@@ -180,7 +180,7 @@ Since Hadamard scaling is self-adjoint: $\langle u, \gamma \odot v \rangle = \la
 
 Define $\overline{t}_\gamma = \gamma \odot \bar{t}$ (computed once for the chosen token):
 
-$$z_{\text{token}} = \frac{1}{|P(x)|} \langle \overline{t}_\gamma, P(x) \rangle + b_t$$
+$$z_{\text{token}} = \frac{\sqrt{N}}{|P(x)|} \langle \overline{t}_\gamma, P(x) \rangle + b_t$$
 
 ### Step 3: Expand the projection
 
@@ -223,7 +223,7 @@ This doesn't factorise nicely over the $x_i$. The normalisation couples all cont
 
 ### Final expression
 
-$$\boxed{z_{\text{token}} = \frac{\sum_i \langle \overline{t}_\gamma, P(x_i) \rangle}{\sqrt{|P(x)|^2}} + b_t}$$
+$$\boxed{z_{\text{token}} = \sqrt{N}\frac{\sum_i \langle \overline{t}_\gamma, P(x_i) \rangle}{\sqrt{|P(x)|^2}} + b_t}$$
 
 where:
 - $\overline{t}_\gamma = \gamma \odot \bar{t}$ (precomputed, basis-dependent but fixed)
@@ -239,7 +239,9 @@ The denominator is the coupling term — it depends on the total residual and pr
 
 For analysis, we treat $|P(x)|$ as a constant computed from the full forward pass, then contributions become linear
 
-$$z_{\text{token}} \approx \sum_i \frac{\langle \overline{t}_\gamma, P(x_i) \rangle}{|P(x)|} + b_t$$
+$$z_{\text{token}} \approx \frac{1}{\sigma} \sum_i \langle \overline{t}_\gamma, P(x_i) \rangle + b_t$$
+
+where $\sigma = |P(x)|/\sqrt{N}$ is the standard deviation.
 
 which is now a clean linear decomposition over residual stream contributions.
 

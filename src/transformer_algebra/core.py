@@ -898,6 +898,11 @@ class ContributionResult:
 
     Displays how terms in an expanded vector sum contribute to an inner product
     like a logit ⟨unembed(token), LN(x)⟩.
+
+    The logit decomposes as:
+        z = (1/σ) * Σᵢ ⟨u⊙γ, P(xᵢ)⟩ + b_t
+
+    where σ is the std of the total residual and b_t = u·β is the bias term.
     """
 
     def __init__(
@@ -905,47 +910,61 @@ class ContributionResult:
         inner_product: "LogitValue",
         terms: list[VectorLike],
         raw_contributions: list[float],
+        normalized_contributions: list[float],
         percentages: list[float],
         total_raw: float,
+        sigma: float,
+        beta_term: float,
     ):
         self.inner_product = inner_product
         self.terms = terms
-        self.raw_contributions = raw_contributions
+        self.raw_contributions = raw_contributions  # ⟨u⊙γ, P(xᵢ)⟩ before dividing by σ
+        self.normalized_contributions = normalized_contributions  # After dividing by σ
         self.percentages = percentages
         self.total_raw = total_raw
+        self.sigma = sigma  # Standard deviation of total residual
+        self.beta_term = beta_term  # b_t = u·β
 
     @property
     def target_token(self) -> str:
         """The target token (for logit inner products)."""
         return self.inner_product.token_text
 
+    @property
+    def computed_logit(self) -> float:
+        """The logit computed from contributions: sum(normalized) + beta_term."""
+        return sum(self.normalized_contributions) + self.beta_term
+
     def __repr__(self):
         lines = [f"Contributions to {self.inner_product!r}:"]
-        for term, raw, pct in zip(self.terms, self.raw_contributions, self.percentages):
-            sign = "+" if raw >= 0 else ""
-            lines.append(f"  {repr(term)}: {sign}{raw:.2f} ({pct:+.1%})")
-        lines.append(f"  Total: {self.total_raw:.2f}")
+        for term, norm, pct in zip(self.terms, self.normalized_contributions, self.percentages):
+            sign = "+" if norm >= 0 else ""
+            lines.append(f"  {repr(term)}: {sign}{norm:.2f} ({pct:+.1%})")
+        lines.append(f"  Subtotal: {sum(self.normalized_contributions):.2f}")
+        lines.append(f"  Beta term: {self.beta_term:.2f}")
+        lines.append(f"  Total: {self.computed_logit:.2f}")
         return "\n".join(lines)
 
     def __len__(self):
         return len(self.terms)
 
     def __iter__(self):
-        """Iterate over (term, raw_contribution, percentage) tuples."""
-        return zip(self.terms, self.raw_contributions, self.percentages)
+        """Iterate over (term, normalized_contribution, percentage) tuples."""
+        return zip(self.terms, self.normalized_contributions, self.percentages)
 
     def top_k(self, k: int = 5) -> list[tuple[VectorLike, float, float]]:
-        """Return the k terms with largest absolute contribution."""
-        items = list(zip(self.terms, self.raw_contributions, self.percentages))
+        """Return the k terms with largest absolute normalized contribution."""
+        items = list(zip(self.terms, self.normalized_contributions, self.percentages))
         items.sort(key=lambda x: abs(x[1]), reverse=True)
         return items[:k]
 
     def summary(self, k: int = 5) -> str:
         """Return a formatted summary of top contributions."""
         lines = [f"Top {k} contributions to {self.target_token!r}:"]
-        for term, raw, pct in self.top_k(k):
-            sign = "+" if raw >= 0 else ""
-            lines.append(f"  {repr(term)}: {sign}{raw:.2f} ({pct:+.1%})")
+        for term, norm, pct in self.top_k(k):
+            sign = "+" if norm >= 0 else ""
+            lines.append(f"  {repr(term)}: {sign}{norm:.2f} ({pct:+.1%})")
+        lines.append(f"  (σ={self.sigma:.2f}, β_t={self.beta_term:.2f})")
         return "\n".join(lines)
 
 
@@ -993,15 +1012,24 @@ def contribution(expanded: VectorSum, inner_product: LogitValue) -> Contribution
     # Get layer norm parameters (γ, β)
     final_ln = transformer._final_ln
     gamma = final_ln.weight.detach()  # [d_model]
-    # beta = final_ln.bias.detach()  # [d_model] - constant term, reported separately
+    beta = final_ln.bias.detach()  # [d_model]
+    eps = final_ln.eps
 
     # Get unembedding vector for target token
     token_id = transformer.get_token_id(inner_product.token_text)
     unembed_matrix = transformer._unembed.weight  # [vocab_size, d_model]
     u = unembed_matrix[token_id, :].detach()  # [d_model]
 
+    # Compute beta term: b_t = u · β
+    beta_term = torch.dot(u, beta).item()
+
     # Precompute u ⊙ γ (element-wise product)
     u_gamma = u * gamma  # [d_model]
+
+    # Compute the total residual to get sigma (standard deviation)
+    total_residual = expanded.tensor.detach()
+    var_total = total_residual.var(unbiased=False)
+    sigma = torch.sqrt(var_total + eps).item()
 
     # Compute contribution for each term
     raw_contributions = []
@@ -1012,18 +1040,25 @@ def contribution(expanded: VectorSum, inner_product: LogitValue) -> Contribution
         c_i = torch.dot(u_gamma, centered).item()  # scalar
         raw_contributions.append(c_i)
 
-    # Compute total and percentages
+    # Normalize contributions by sigma
+    normalized_contributions = [c / sigma for c in raw_contributions]
+
+    # Compute total and percentages (based on normalized contributions)
+    total_normalized = sum(normalized_contributions)
     total_raw = sum(raw_contributions)
-    if abs(total_raw) < 1e-10:
+    if abs(total_normalized) < 1e-10:
         # Avoid division by zero - all contributions negligible
-        percentages = [0.0] * len(raw_contributions)
+        percentages = [0.0] * len(normalized_contributions)
     else:
-        percentages = [c / total_raw for c in raw_contributions]
+        percentages = [c / total_normalized for c in normalized_contributions]
 
     return ContributionResult(
         inner_product=inner_product,
         terms=list(expanded.terms),
         raw_contributions=raw_contributions,
+        normalized_contributions=normalized_contributions,
         percentages=percentages,
         total_raw=total_raw,
+        sigma=sigma,
+        beta_term=beta_term,
     )
