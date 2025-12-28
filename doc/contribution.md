@@ -53,7 +53,7 @@ The bias term `⟨u, β⟩` is constant across the expansion and can be reported
 
 ### Finding: The Final Block Dominates
 
-Testing with pythia-160m-deduped reveals that the **final block (Δx^11) contributes ~95% of the logit** for all predictions, regardless of whether they are context-dependent or not.
+Testing with pythia-160m-deduped reveals that the **final block (Δx^11) contributes ~95% of the logit** for both the context-dependent and word-completion examples.
 
 ### Example 1: Context-Dependent Prediction
 
@@ -116,10 +116,24 @@ To understand *where* context matters, we need:
 2. **Attention pattern analysis** — Which heads in which layers attend to "Ireland"
 3. **Ablation studies** — How does removing "Ireland" from context change block contributions?
 
+## Level 2 Results: Attention vs MLP
+
+Expanding block 11 into attention and MLP components:
+
+```
+Block 11 breakdown for ' Dublin':
+  Δx^11_A: +264.66 (+14.1%)   ← Attention
+  Δx^11_M: +1522.12 (+80.8%)  ← MLP dominates
+```
+
+The **MLP in the final block** does most of the work projecting to output space. This suggests the MLP has learned token-prediction directions, while attention primarily routes information.
+
+
 ## Open Questions
 
 1. Should negative contributions be displayed differently? (A term can push away from a token)
 2. How to handle very small total contributions (near-zero logit)?
 3. Should we also report the raw contribution values, not just percentages?
-4. Why does the final block dominate so strongly? Is this architecture-specific (GPT-NeoX)?
-5. Would attention-head-level analysis (Level 2 expansion) reveal where context integration occurs?
+4. Why does the final block MLP dominate so strongly?
+5. Would per-head analysis (Level 3) reveal which heads attend to "Ireland"?
+

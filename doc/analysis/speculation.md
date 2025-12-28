@@ -1,11 +1,19 @@
 # Speculation
 
 Exploratory ideas and work-in-progress thinking about transformer internals.
+## Table of Contents
+- [Residual Space Structure](#residual-space-structure)
+- [Geometric Decomposition of Transformer Components](#geometric-decomposition-of-transformer-components)
+- [Single-Token Probability Approximation](#single-token-probability-approximation)
+- [Logit Decomposition Through Layer Norm](#logit-decomposition-through-layer-norm)
+- [Functional Discourse Grammar](#functional-discourse-grammar)
+- [Open Questions](#open-questions)
 
 ## Residual Space Structure
 
 ### Dual Pairing
 
+Embedding vectors form a non-orthonormal, overcomplete frame for part of the residual space.
 The unembedding vectors act as **linear functionals** on the residual space. For any residual $x$:
 $$
 \text{logit}_{\text{token}}(x) = \langle \overline{\text{token}}, x \rangle
@@ -40,37 +48,6 @@ This directed notation complements the algebraic expressions by showing causal f
 
 ---
 
-## Prompted Transformer Structure
-
-### Differential Context
-
-Given the causal structure, we can ask: what does adding a token to context *change*?
-
-$$\Delta T(t_{n+1} | c) = T(c, t_{n+1}) - T(c)$$
-
-This "context derivative" captures how the new token modifies the transformer's behavior. Questions:
-- Is there a meaningful notion of $\frac{\partial T(c)}{\partial c}$?
-- How does this relate to in-context learning?
-
-### In-Context Learning
-
-The prompted transformer $T(c)$ can exhibit behaviors not present in bare $T$. For example, with few-shot examples in $c$, $T(c)$ performs tasks that $T$ alone cannot. This suggests:
-
-$$T(\text{examples})(x) \approx T_{\text{fine-tuned}}(x)$$
-
-The context state $\mathcal{C}(\text{examples})$ encodes "temporary weights" via the residual stream that attention can read.
-
-### Context as Soft Program
-
-We might view $T(c)$ as $T$ "programmed" by $c$:
-- The bare transformer $T$ is a universal machine
-- Context $c$ provides instructions/data
-- $T(c)(x)$ executes the program on input $x$
-
-This framing connects to work on transformers as universal computers and in-context learning as mesa-optimization.
-
----
-
 ## Geometric Decomposition of Transformer Components
 
 ### The MLP Layer: Beyond Matrix Multiplication
@@ -89,21 +66,6 @@ where $\sigma$ is GeLU. Geometric decomposition:
 | $W_{\text{out}} \cdot (\cdot)$ | Projects back to residual space |
 
 **Geometrically**: The MLP decomposes the input into a set of **privileged directions** (the rows of $W_{\text{in}}$), applies a **nonlinear weighting** based on how aligned the input is with each direction, then **reassembles** using $W_{\text{out}}$.
-
-This is closer to a **"superposition of conditional projections"** than a rotation:
-$$
-M(x) \approx \sum_k \sigma(\langle w^{\text{in}}_k, x \rangle) \cdot w^{\text{out}}_k
-$$
-
-Each "neuron" $k$ fires proportionally to alignment with $w^{\text{in}}_k$ and contributes $w^{\text{out}}_k$ to the output.
-
-### Why Not Pure Rotation?
-
-Rotations (orthogonal transformations) preserve norms and angles. Neither attention nor MLP does this:
-- **Attention** mixes information *across positions* — more like a convex combination than rotation
-- **MLP** selectively amplifies/suppresses directions — changes norm non-uniformly
-
-The better abstraction might be **"projective geometry"** or **"cone operations"**: the MLP maps inputs to a cone of possible outputs, with the specific output depending on where in the input space you are.
 
 ### Abstract Block Decomposition
 
@@ -124,54 +86,9 @@ where $\alpha_h(x)$ are the attention-derived mixing weights and $P_h$ are the O
 | $\sum_k [x]_{d_k}^{+} r_k$ | MLP as "ReLU-gated sum" (abstracting activation) |
 | $\bigvee_k d_k$ | "Feature span" — subspace spanned by detector directions |
 
-The key insight for interpretability: **the MLP learns a discrete set of directions that are meaningful**, and the nonlinearity selects which ones to activate. This is why "neuron interpretability" sometimes works—each $(d_k, r_k)$ pair can encode a concept.
 
 ---
 
-## Block-wise Analysis
-
-### Isolating the First Block
-
-The notation $T_i(c)$ for block $i$ of a prompted transformer is useful, though whether $T_2(c)$ means "block 2 alone" or "blocks 1-2 composed" may depend on context—to be resolved through examples.
-
-For the first block, $T_1(c)(x)$ is cleanest to analyze because:
-- Attention only sees context embeddings $\{x_k^0\}_{k < j}$ (fixed once context given)
-- Plus the input $x$ at position $j$
-- No dependence on earlier block computations at context positions
-
-### Logit Difference Analysis
-
-When investigating why token A was predicted over token B, define the **logit difference direction**:
-$$d = \overline{A} - \overline{B}$$
-
-Then for any contribution $\Delta x$:
-$$\langle d, \Delta x \rangle > 0 \implies \text{pushes toward A over B}$$
-
-This projects the high-dimensional residual onto a 1D "decision axis." More generally, $\{\overline{A}, \overline{B}\}$ spans a 2D subspace for investigation.
-
-### First Block Contribution Decomposition
-
-$$\Delta x_j^1 = \underbrace{\tilde{A}^1(x)}_{\text{attention}} + \underbrace{\tilde{M}^1(x + \tilde{A}^1(x))}_{\text{MLP}}$$
-
-We can compute $\langle d, \tilde{A}^1(x) \rangle$ and $\langle d, \tilde{M}^1(\cdot) \rangle$ separately to see whether attention or MLP drives the prediction.
-
-### Feature Entanglement via Layer Norm
-
-The input to block 1 at position $k$ is $x_k^0 = \underline{t_k} + p_k$ (token + position). One might hope to separate contributions:
-$$V^{1,h}(LN(x_k^0)) \stackrel{?}{\approx} V^{1,h}(LN(\underline{t_k})) + V^{1,h}(LN(p_k))$$
-
-**But layer norm breaks linearity**: $LN(a + b) \neq LN(a) + LN(b)$
-
-So token and position features are entangled through attention. Options:
-1. Empirically measure how much each matters
-2. Accept combined $x_k^0$ as the unit of analysis
-3. Ablation experiments (zero out positional embeddings, etc.)
-
-### Attention: "Where" vs "What"
-
-The attention pattern $A^{1,h}_{jk}$ (from Q·K) determines **where** to look. The value projection $V^{1,h}$ determines **what** gets moved. These are separable computations worth analyzing independently.
-
----
 
 ## Single-Token Probability Approximation
 
@@ -222,88 +139,6 @@ The approximation breaks down when:
 - Analysis is near **decision boundaries** where multiple tokens have similar probability
 - You need **exact probability values** rather than relative contributions
 
-### Implications for Interpretability
-
-This approximation justifies working primarily with **logits rather than probabilities** for attribution:
-
-$$
-z_{\text{token}}(x) = \langle \overline{\text{token}}, LN(x) \rangle
-$$
-
-Since $\log P \approx z - \text{const}$, changes in logit directly track changes in log-probability. This is why logit lens and direct logit attribution work—we can meaningfully interpret $\langle \overline{\text{token}}, x^i_j \rangle$ at intermediate layers without computing the full softmax normalization.
-
-### Logit Decomposition Through Layer Norm
-
-For decomposition across residual contributions, consider:
-$$
-z_{\text{token}} = \left\langle \overline{\text{token}}, LN\left(\sum_i x_i\right) \right\rangle
-$$
-
-where $x = \sum_i x_i$ is the expanded residual (embedding + block contributions).
-
-**Layer norm definition:**
-$$
-LN(x) = \gamma \odot \frac{x - \mu(x)}{\sigma(x)} + \beta
-$$
-
-where $\mu(x) = \text{mean}(x)$ and $\sigma(x) = \text{std}(x)$.
-
-**Key property: The mean is linear.**
-$$
-\mu\left(\sum_i x_i\right) = \sum_i \mu(x_i)
-$$
-
-This means the centered residual also decomposes:
-$$
-x - \mu(x) = \sum_i x_i - \sum_i \mu(x_i) = \sum_i (x_i - \mu(x_i))
-$$
-
-**Expanding the inner product:**
-$$
-\langle u, LN(x) \rangle = \frac{1}{\sigma} \langle u \odot \gamma, x - \mu \rangle + \langle u, \beta \rangle
-$$
-
-Substituting the decomposition:
-$$
-\langle u \odot \gamma, x - \mu \rangle = \sum_i \langle u \odot \gamma, x_i - \mu(x_i) \rangle
-$$
-
-**Result: The logit IS a scaled sum of per-term contributions:**
-$$
-z_t = \frac{1}{\sigma} \sum_i c_i + \langle u_t, \beta \rangle
-$$
-
-where $c_i = \langle u_t \odot \gamma, x_i - \mu(x_i) \rangle$ is the raw contribution from term $i$.
-
-### The Shared Scaling Factor
-
-The standard deviation $\sigma = \text{std}(\sum_i x_i)$ depends on all terms together—it's a **shared scaling factor** that doesn't affect relative contributions:
-
-$$
-\text{contribution}(x_i) = \frac{c_i}{\sum_j c_j}
-$$
-
-This ratio is independent of $\sigma$.
-
-### Simplified Identity
-
-When the mean is small (or we work with centered quantities), and absorbing $\gamma$ and ignoring $\beta$:
-
-$$
-\langle u, LN(\sum_i a_i) \rangle \approx \frac{\sum_i \langle u, a_i \rangle}{\|\sum_i a_i\|}
-$$
-
-The norm $\|x\| = \sqrt{d} \cdot \sigma$ when $\mu = 0$, so this is equivalent up to a constant.
-
-**Interpretation:** The individual inner products $\langle u, a_i \rangle$ are **additive contributions** to the numerator, and the shared denominator $\|\sum_i a_i\|$ normalizes them.
-
-### Implications for Contribution Analysis
-
-1. **Linearity is preserved** in the numerator—contributions from different terms sum
-2. **The scaling is shared**—relative contributions are well-defined
-3. **The bias term** $\langle u, \beta \rangle$ is constant across the expansion (token-dependent but not residual-dependent)
-4. **No Shapley needed for logits**—the decomposition is exact, not approximated
-
 ### Aside: Inference Algorithms and the Full Distribution
 
 In practice, most LLM inference algorithms don't use the full softmax distribution anyway:
@@ -316,11 +151,97 @@ In practice, most LLM inference algorithms don't use the full softmax distributi
 | **Min-p** | No | Keep tokens where $P(t) > p \cdot P(\text{top})$ |
 | **Temperature sampling** | Yes (at T=1) | Samples from full $P(t) \propto \exp(z_t / T)$ |
 
-Pure temperature sampling at T=1 follows the exact softmax, but production systems typically use truncation (top-k, top-p, min-p) to avoid occasionally sampling very low-probability tokens that produce incoherent output.
+Pure temperature sampling at T=1 follows the exact softmax, but production systems typically use truncation (top-k, top-p, min-p) to avoid occasionally sampling very low-probability tokens that produce incoherent output. The model's typical behavior depends primarily on the relative ordering among top candidates, not the exact probability mass in the tail.
 
-This further justifies working with logits for interpretability: if inference itself ignores most of the distribution, the precise normalization matters even less. The model's actual behavior depends primarily on the relative ordering among top candidates, not the exact probability mass in the tail.
 
-The one context where $Z$ matters fully is computing **perplexity/loss during training**, where cross-entropy requires the true probability of the target token.
+## Logit Decomposition Through Layer Norm
+
+For decomposition across residual contributions, consider:
+$$
+z_{\text{token}} = \left\langle \overline{t}, \mathrm{LN}\left(\sum_i x_i\right) \right\rangle
+$$
+
+where $z_{\text{token}}$ is the logit, $\overline{t}$ is the row of the unembedding layer corresponding with the token, $\mathrm{LN}$ is layer normalisation, including $\gamma$ and $\beta$ parameters and $x = \sum_i x_i$ is the expanded residual (embedding + block contributions).
+
+Layer normalisation with learned parameters is:
+$$\mathrm{LN}(x) = \gamma \odot \frac{P(x)}{|P(x)|} + \beta$$
+
+where $P(x) = x - (x \cdot \vec{1})\vec{1}$ is the mean-centering projection.
+
+### Step 1: Separate the β term
+
+$$z_{\text{token}} = \left\langle \bar{t}, \gamma \odot \frac{P(x)}{|P(x)|} \right\rangle + \langle \bar{t}, \beta \rangle$$
+
+The second term is a constant (for fixed token), call it $b_t = \bar{t} \cdot \beta$.
+
+### Step 2: Move γ to the query vector using the adjoint
+
+Since Hadamard scaling is self-adjoint: $\langle u, \gamma \odot v \rangle = \langle \gamma \odot u, v \rangle$
+
+Define $\overline{t}_\gamma = \gamma \odot \bar{t}$ (computed once for the chosen token):
+
+$$z_{\text{token}} = \frac{1}{|P(x)|} \langle \overline{t}_\gamma, P(x) \rangle + b_t$$
+
+### Step 3: Expand the projection
+
+$$P(x) = x - (x \cdot \vec{1})\vec{1}$$
+
+So:
+$$\langle \overline{t}_\gamma, P(x) \rangle = \langle \overline{t}_\gamma, x \rangle - (x \cdot \vec{1})(\overline{t}_\gamma \cdot \vec{1})$$
+
+Let $\mu_{\overline{t}} = \overline{t}_\gamma \cdot \vec{1}$ (a constant for fixed token). Then:
+
+$$\langle \overline{t}_\gamma, P(x) \rangle = \overline{t}_\gamma \cdot x - \mu_{\overline{t}}(\vec{1} \cdot x)$$
+
+### Step 4: Expand over residual contributions
+
+With $x = \sum_i x_i$:
+
+$$\overline{t}_\gamma \cdot x = \sum_i (\overline{t}_\gamma \cdot x_i)$$
+
+$$\vec{1} \cdot x = \sum_i (\vec{1} \cdot x_i)$$
+
+So:
+$$\langle \overline{t}_\gamma, P(x) \rangle = \sum_i (\overline{t}_\gamma \cdot x_i) - \mu_{\overline{t}} \sum_i (\vec{1} \cdot x_i) = \sum_i \left[ \overline{t}_\gamma \cdot x_i - \mu_{\overline{t}}(\vec{1} \cdot x_i) \right]$$
+
+This simplifies nicely:
+$$\langle \overline{t}_\gamma, P(x) \rangle = \sum_i \langle \overline{t}_\gamma, P(x_i) \rangle$$
+
+(The projection and the inner product both distribute over sums.)
+
+### Step 5: Handle the normalisation factor
+
+We have:
+$$|P(x)|^2 = P(x) \cdot P(x) = |x|^2 - (x \cdot \vec{1})^2$$
+
+With $x = \sum_i x_i$:
+$$|x|^2 = \sum_i |x_i|^2 + 2\sum_{i < j} x_i \cdot x_j$$
+
+$$(x \cdot \vec{1})^2 = \left(\sum_i x_i \cdot \vec{1}\right)^2$$
+
+This doesn't factorise nicely over the $x_i$. The normalisation couples all contributions together.
+
+### Final expression
+
+$$\boxed{z_{\text{token}} = \frac{\sum_i \langle \overline{t}_\gamma, P(x_i) \rangle}{\sqrt{|P(x)|^2}} + b_t}$$
+
+where:
+- $\overline{t}_\gamma = \gamma \odot \bar{t}$ (precomputed, basis-dependent but fixed)
+- $b_t = \bar{t} \cdot \beta$ (constant)
+- $P(x_i) = x_i - (x_i \cdot \vec{1})\vec{1}$
+- $|P(x)|^2 = \left|\sum_i x_i\right|^2 - \left(\sum_i x_i \cdot \vec{1}\right)^2$
+
+### Interpretation
+
+The numerator decomposes cleanly as a sum of contributions from each $x_i$. Each term $\langle \overline{t}_\gamma, P(x_i) \rangle$ measures how much residual component $x_i$ contributes in the $\overline{t}_\gamma$ direction after mean-centering.
+
+The denominator is the coupling term — it depends on the total residual and prevents clean additive decomposition. This is the fundamental non-linearity of layer norm.
+
+For analysis, we treat $|P(x)|$ as a constant computed from the full forward pass, then contributions become linear
+
+$$z_{\text{token}} \approx \sum_i \frac{\langle \overline{t}_\gamma, P(x_i) \rangle}{|P(x)|} + b_t$$
+
+which is now a clean linear decomposition over residual stream contributions.
 
 ---
 
