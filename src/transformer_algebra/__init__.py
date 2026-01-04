@@ -13,6 +13,7 @@ from .core import (
     AttentionContribution,
     MLPContribution,
     VectorSum,
+    LayerNormApplication,
     # Logits
     LogitMapping,
     LogitValue,
@@ -54,6 +55,7 @@ __all__ = [
     "AttentionContribution",
     "MLPContribution",
     "VectorSum",
+    "LayerNormApplication",
     # Logits
     "LogitMapping",
     "LogitValue",

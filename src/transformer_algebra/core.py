@@ -154,13 +154,13 @@ class ResidualVector:
         """Apply final layer norm to get the normalized residual."""
         return self.transformer._final_ln(self._tensor)
 
-    def expand(self) -> "VectorSum":
-        """Expand into embedding plus block contributions.
+    def expand(self) -> "LayerNormApplication":
+        """Expand into LN^T applied to embedding plus block contributions.
 
-        T(x) -> x + Δx^0 + Δx^1 + ... + Δx^{n-1}
+        T(x) = LN^T(x + ΔB^1(x) + ΔB^2(x^1) + ... + ΔB^n(x^{n-1}))
 
         Returns:
-            VectorSum of embedding and block contributions
+            LayerNormApplication wrapping VectorSum of embedding and block contributions
         """
         if self._hidden_states is None:
             raise ValueError(
@@ -179,26 +179,37 @@ class ResidualVector:
             transformer=self.transformer,
         ))
 
-        # Block contributions: Δx^i = hidden_states[i+1] - hidden_states[i]
+        # Block contributions: ΔB^i = hidden_states[i] - hidden_states[i-1]
+        # Internal layer index is 0-based, display is 1-based per notation.md
         for i in range(self.layer):
             delta = (self._hidden_states[i + 1][0, self.position, :] -
                      self._hidden_states[i][0, self.position, :])
             terms.append(BlockContribution(
                 tensor=delta,
-                layer=i,
+                layer=i,  # 0-based internally
                 transformer=self.transformer,
                 token_text=self.token_text,
                 position=self.position,
                 hidden_states=self._hidden_states,
             ))
 
-        return VectorSum(terms)
+        inner_sum = VectorSum(terms)
+
+        # Wrap with LN^T per notation.md: T(x) = LN^T(T^n(x))
+        return LayerNormApplication(
+            inner=inner_sum,
+            layer_norm=self.transformer._final_ln,
+            transformer=self.transformer,
+            name="LN^T",
+        )
 
 
 class AttentionContribution:
     """Contribution from the attention sublayer of a block.
 
-    Represents Δx^i_A - the attention component of block i's contribution.
+    Represents ΔB^i_A(x^{i-1}) - the attention component of block i's contribution.
+
+    Note: Internal layer index is 0-based, display is 1-based per notation.md.
 
     Implements VectorLike protocol.
     """
@@ -207,7 +218,7 @@ class AttentionContribution:
                  transformer: "PromptedTransformer", token_text: str,
                  position: int):
         self._tensor = tensor
-        self.layer = layer
+        self.layer = layer  # 0-based internally
         self.transformer = transformer
         self.token_text = token_text
         self.position = position
@@ -221,13 +232,16 @@ class AttentionContribution:
         return self._tensor.shape[0]
 
     def __repr__(self):
-        return f"Δx^{self.layer}_A"
+        # Display 1-based index per notation.md
+        return f"ΔB^{self.layer + 1}_A"
 
 
 class MLPContribution:
     """Contribution from the MLP sublayer of a block.
 
-    Represents Δx^i_M - the MLP component of block i's contribution.
+    Represents ΔB^i_M(x^{i-1}) - the MLP component of block i's contribution.
+
+    Note: Internal layer index is 0-based, display is 1-based per notation.md.
 
     Implements VectorLike protocol.
     """
@@ -236,7 +250,7 @@ class MLPContribution:
                  transformer: "PromptedTransformer", token_text: str,
                  position: int):
         self._tensor = tensor
-        self.layer = layer
+        self.layer = layer  # 0-based internally
         self.transformer = transformer
         self.token_text = token_text
         self.position = position
@@ -250,14 +264,18 @@ class MLPContribution:
         return self._tensor.shape[0]
 
     def __repr__(self):
-        return f"Δx^{self.layer}_M"
+        # Display 1-based index per notation.md
+        return f"ΔB^{self.layer + 1}_M"
 
 
 class BlockContribution:
     """Contribution from a single transformer block.
 
-    Represents Δx^i = T^{i+1}(x) - T^i(x), the change in residual
-    from block i. Can be expanded into Δx^i_A + Δx^i_M.
+    Represents ΔB^i(x^{i-1}) = B^i(x^{i-1}) - x^{i-1}, the additive
+    contribution from block i applied to the accumulated residual.
+    Can be expanded into ΔB^i_A + ΔB^i_M.
+
+    Note: Internal layer index is 0-based, display is 1-based per notation.md.
 
     Implements VectorLike protocol.
     """
@@ -269,7 +287,7 @@ class BlockContribution:
                  attention_tensor: torch.Tensor | None = None,
                  mlp_tensor: torch.Tensor | None = None):
         self._tensor = tensor
-        self.layer = layer
+        self.layer = layer  # 0-based internally
         self.transformer = transformer
         self.token_text = token_text
         self.position = position
@@ -288,12 +306,13 @@ class BlockContribution:
         return self._tensor.shape[0]
 
     def __repr__(self):
-        return f"Δx^{self.layer}"
+        # Display 1-based index per notation.md
+        return f"ΔB^{self.layer + 1}"
 
     def expand(self) -> "VectorSum":
         """Expand into attention + MLP contributions.
 
-        Δx^i -> Δx^i_A + Δx^i_M
+        ΔB^i(x^{i-1}) -> ΔB^i_A(x^{i-1}) + ΔB^i_M(x^{i-1})
 
         Returns:
             VectorSum of attention and MLP contributions
@@ -331,7 +350,7 @@ class BlockContribution:
 class VectorSum:
     """Sum of vector-like objects.
 
-    Represents an expanded form like: x + Δx^0 + Δx^1 + ... + Δx^{n-1}
+    Represents an expanded form like: x + ΔB^1(x) + ΔB^2(x^1) + ... + ΔB^n(x^{n-1})
 
     Is itself VectorLike: can be used anywhere a vector is expected.
     """
@@ -380,10 +399,60 @@ class VectorSum:
         return VectorSum(expanded)
 
 
-def expand(x: VectorLike) -> VectorSum:
+class LayerNormApplication:
+    """Application of layer norm to a vector expression.
+
+    Represents LN^T(inner) where inner is typically a VectorSum.
+
+    Per notation.md:
+        T(x) = LN^T(T^n(x)) = LN^T(x + Σ ΔB^i(x^{i-1}))
+
+    This wrapper makes the layer norm explicit in expanded forms.
+    """
+
+    def __init__(self, inner: VectorLike, layer_norm, transformer: "PromptedTransformer",
+                 name: str = "LN^T"):
+        self.inner = inner
+        self._layer_norm = layer_norm
+        self.transformer = transformer
+        self.name = name
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        """Apply layer norm to get the normalized tensor."""
+        return self._layer_norm(self.inner.tensor)
+
+    @property
+    def d_model(self) -> int:
+        return self.inner.d_model
+
+    def __repr__(self):
+        return f"{self.name}({self.inner})"
+
+    def expand(self) -> "LayerNormApplication":
+        """Expand the inner expression while keeping LN wrapper."""
+        if hasattr(self.inner, 'expand'):
+            expanded_inner = self.inner.expand()
+            return LayerNormApplication(
+                inner=expanded_inner,
+                layer_norm=self._layer_norm,
+                transformer=self.transformer,
+                name=self.name,
+            )
+        return self
+
+    @property
+    def unwrapped(self) -> VectorLike:
+        """Get the inner expression without the LN wrapper."""
+        return self.inner
+
+
+def expand(x: VectorLike) -> VectorLike:
     """Expand a vector into its additive components.
 
-    For ResidualVector: T(x) -> embed(x) + Δx^0 + Δx^1 + ... + Δx^{n-1}
+    For ResidualVector: T(x) -> LN^T(x + ΔB^1(x) + ΔB^2(x^1) + ... + ΔB^n(x^{n-1}))
+    For LayerNormApplication: expand the inner expression, keep LN wrapper
+    For BlockContribution: ΔB^i -> ΔB^i_A + ΔB^i_M
     For VectorSum: expand each term recursively
     For other VectorLike: wrap in single-term VectorSum
 
@@ -391,13 +460,13 @@ def expand(x: VectorLike) -> VectorSum:
         x: Any vector-like object
 
     Returns:
-        VectorSum of components
+        Expanded form (LayerNormApplication, VectorSum, or wrapped VectorLike)
 
     Example:
         >>> x = T(" is")
         >>> ex = expand(x)
-        >>> print(ex)  # embed(' is') + Δx^0 + Δx^1 + ... + Δx^{11}
-        >>> print(len(ex))  # 13 (embedding + 12 blocks)
+        >>> print(ex)  # LN^T(embed(' is') + ΔB^1 + ΔB^2 + ... + ΔB^{12})
+        >>> print(ex.inner)  # embed(' is') + ΔB^1 + ... (VectorSum)
     """
     if hasattr(x, 'expand'):
         return x.expand()
