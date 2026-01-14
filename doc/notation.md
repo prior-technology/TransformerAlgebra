@@ -101,23 +101,31 @@ $$T^i = B^i \circ B^{i-1} \circ \cdots \circ B^1$$
 
 ## Expansion Identity
 
-The residual $x^i = T^i(x)$ can be expanded as a sum of block contributions:
+The truncated transformer $T^n$ can be expressed as a sum of operator compositions acting on the initial input:
 
 **Operator form:**
-$$T^n(x) = x + \sum_{i=1}^{n} \Delta B^i(x^{i-1})$$
+$$T^n = I + \sum_{i=1}^{n} \Delta B^i \circ T^{i-1}$$
 
-where each $\Delta B^i$ acts on the accumulated residual $x^{i-1} = T^{i-1}(x)$.
+where $T^0 = I$ (identity). Each term $\Delta B^i \circ T^{i-1}$ is a "constant" operator—it doesn't reference intermediate results, just composes the block contribution extractor with the truncated transformer.
 
-**Expanded form:**
-$$T^n(x) = x + \Delta B^1(x) + \Delta B^2(x^1) + \cdots + \Delta B^n(x^{n-1})$$
+**Applied to input:**
+$$T^n(x) = x + \Delta B^1(x) + \Delta B^2 T^1(x) + \Delta B^3 T^2(x) + \cdots + \Delta B^n T^{n-1}(x)$$
+
+**Factored form (for display):**
+$$T^n(x) = (I + \Delta B^1 + \Delta B^2 T^1 + \Delta B^3 T^2 + \cdots + \Delta B^n T^{n-1})(x)$$
+
+This formulation keeps all terms expressed in relation to the initial input $x$, avoiding references to intermediate residuals $x^i$. The shorthand $x^i = T^i(x)$ still denotes the residual after block $i$, but the expansion writes operators rather than evaluated vectors.
 
 The full transformer output applies the terminal layer norm:
-$$T(x) = LN^T(T^n(x)) = LN^T\left(x + \sum_{i=1}^{n} \Delta B^i(x^{i-1})\right)$$
+$$T(x) = LN^T(T^n(x)) = LN^T\left((I + \Delta B^1 + \Delta B^2 T^1 + \cdots + \Delta B^n T^{n-1})(x)\right)$$
 
 ### Attention/MLP Decomposition
 
-Each block contribution decomposes into attention and MLP components:
-$$\Delta B^i(x^{i-1}) = \Delta B^i_A(x^{i-1}) + \Delta B^i_M(x^{i-1})$$
+Each block contribution operator decomposes into attention and MLP components:
+$$\Delta B^i = \Delta B^i_A + \Delta B^i_M$$
+
+So the composed contribution from block $i$ is:
+$$\Delta B^i T^{i-1} = \Delta B^i_A T^{i-1} + \Delta B^i_M T^{i-1}$$
 
 For pre-norm architectures (Pythia/GPT-NeoX with parallel attention):
 - $\Delta B^i_A(x) = \tilde{A}^i(x)$ — attention contribution
