@@ -467,11 +467,11 @@ class TestModelLoading:
         assert logits.shape[0] == T.config.vocab_size
 
     def test_expand_residual_to_blocks(self):
-        """Test expanding a ResidualVector into embedding + block contributions."""
+        """Test expanding a ResidualVector into LN^T(embedding + block contributions)."""
         import torch
         from transformer_algebra import (
             load_pythia_model, PromptedTransformer, expand,
-            EmbeddingVector, BlockContribution, VectorSum,
+            EmbeddingVector, BlockContribution, VectorSum, LayerNormApplication,
         )
 
         model, tokenizer = load_pythia_model("EleutherAI/pythia-14m")
@@ -481,19 +481,24 @@ class TestModelLoading:
         x = T(" is")
         expanded = expand(x)
 
-        # Should be a VectorSum
-        assert isinstance(expanded, VectorSum)
+        # Should be LN^T wrapping a VectorSum
+        assert isinstance(expanded, LayerNormApplication)
+        inner = expanded.inner
+        assert isinstance(inner, VectorSum)
 
         # First term should be embedding, rest should be block contributions
-        assert isinstance(expanded[0], EmbeddingVector)
-        for i in range(1, len(expanded)):
-            assert isinstance(expanded[i], BlockContribution)
+        assert isinstance(inner[0], EmbeddingVector)
+        for i in range(1, len(inner)):
+            assert isinstance(inner[i], BlockContribution)
 
         # Number of terms = 1 (embedding) + n_layers (block contributions)
-        assert len(expanded) == 1 + T.config.n_layers
+        assert len(inner) == 1 + T.config.n_layers
 
-        # Sum of terms should equal original tensor
-        assert torch.allclose(expanded.tensor, x.tensor, atol=1e-5)
+        # Inner sum of terms should equal the unnormalized residual T^n(x)
+        # x.tensor is the pre-LN residual, so compare with inner.tensor
+        assert torch.allclose(inner.tensor, x.tensor, atol=1e-5)
+        # Alternatively, normalized results should match
+        assert torch.allclose(expanded.tensor, x.normed, atol=1e-5)
 
     def test_expand_block_to_attention_mlp(self):
         """Test expanding a BlockContribution into attention + MLP."""
@@ -510,8 +515,8 @@ class TestModelLoading:
         x = T(" is")
         expanded = expand(x)
 
-        # Get a block contribution and expand it
-        block_contrib = expanded[1]  # First block contribution (Δx^0)
+        # Get a block contribution and expand it (access inner VectorSum first)
+        block_contrib = expanded.inner[1]  # First block contribution (ΔB^1)
         assert isinstance(block_contrib, BlockContribution)
 
         block_expanded = block_contrib.expand()
@@ -526,11 +531,12 @@ class TestModelLoading:
         assert torch.allclose(block_expanded.tensor, block_contrib.tensor, atol=1e-5)
 
     def test_multi_level_expand(self):
-        """Test expanding VectorSum to go deeper (Level 1 -> Level 2)."""
+        """Test expanding LayerNormApplication to go deeper (Level 1 -> Level 2)."""
         import torch
         from transformer_algebra import (
             load_pythia_model, PromptedTransformer, expand,
             EmbeddingVector, AttentionContribution, MLPContribution, VectorSum,
+            LayerNormApplication,
         )
 
         model, tokenizer = load_pythia_model("EleutherAI/pythia-14m")
@@ -538,27 +544,35 @@ class TestModelLoading:
 
         x = T(" world")
 
-        # Level 1 expansion: T(x) -> embed + Δx^0 + Δx^1 + ...
+        # Level 1 expansion: T(x) -> LN^T(embed + ΔB^1 + ΔB^2 + ...)
         level1 = expand(x)
+        assert isinstance(level1, LayerNormApplication)
 
-        # Level 2 expansion: expand each BlockContribution
+        # Level 2 expansion: expand each BlockContribution inside LN^T
         level2 = level1.expand()
 
-        # Should have: embedding + (attn + mlp) for each block
+        # Should still be wrapped in LN^T
+        assert isinstance(level2, LayerNormApplication)
+        inner = level2.inner
+
+        # Inner should have: embedding + (attn + mlp) for each block
         # = 1 + 2 * n_layers terms
         expected_terms = 1 + 2 * T.config.n_layers
-        assert len(level2) == expected_terms
+        assert len(inner) == expected_terms
 
         # First should still be embedding
-        assert isinstance(level2[0], EmbeddingVector)
+        assert isinstance(inner[0], EmbeddingVector)
 
         # Rest should alternate attention/MLP (grouped by block)
         for i in range(T.config.n_layers):
-            assert isinstance(level2[1 + 2*i], AttentionContribution)
-            assert isinstance(level2[1 + 2*i + 1], MLPContribution)
+            assert isinstance(inner[1 + 2*i], AttentionContribution)
+            assert isinstance(inner[1 + 2*i + 1], MLPContribution)
 
-        # Sum of all Level 2 terms should equal original residual
-        assert torch.allclose(level2.tensor, x.tensor, atol=1e-5)
+        # Inner sum should equal the unnormalized residual
+        # x.tensor is pre-LN, so compare with inner.tensor
+        assert torch.allclose(inner.tensor, x.tensor, atol=1e-5)
+        # Normalized result should match x.normed
+        assert torch.allclose(level2.tensor, x.normed, atol=1e-5)
 
     def test_expand_repr(self):
         """Test that expanded forms have meaningful string representations."""
@@ -572,13 +586,14 @@ class TestModelLoading:
         x = T(" input")
         expanded = expand(x)
 
-        # Should show embed + block contributions
+        # Should show LN^T wrapper with embed + block contributions using 1-based ΔB^i notation
         repr_str = repr(expanded)
+        assert "LN^T" in repr_str
         assert "embed" in repr_str
-        assert "Δx^0" in repr_str
+        assert "ΔB^1" in repr_str  # 1-based indexing per notation.md
 
-        # Expand a block
-        block_expanded = expanded[1].expand()
+        # Expand a block (access inner VectorSum first)
+        block_expanded = expanded.inner[1].expand()
         block_repr = repr(block_expanded)
-        assert "Δx^0_A" in block_repr
-        assert "Δx^0_M" in block_repr
+        assert "ΔB^1_A" in block_repr  # 1-based indexing
+        assert "ΔB^1_M" in block_repr  # 1-based indexing

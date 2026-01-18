@@ -154,13 +154,13 @@ class ResidualVector:
         """Apply final layer norm to get the normalized residual."""
         return self.transformer._final_ln(self._tensor)
 
-    def expand(self) -> "VectorSum":
-        """Expand into embedding plus block contributions.
+    def expand(self) -> "LayerNormApplication":
+        """Expand into LN^T applied to embedding plus block contributions.
 
-        T(x) -> x + Δx^0 + Δx^1 + ... + Δx^{n-1}
+        T(x) = LN^T(x + ΔB^1(x) + ΔB^2(x^1) + ... + ΔB^n(x^{n-1}))
 
         Returns:
-            VectorSum of embedding and block contributions
+            LayerNormApplication wrapping VectorSum of embedding and block contributions
         """
         if self._hidden_states is None:
             raise ValueError(
@@ -179,26 +179,37 @@ class ResidualVector:
             transformer=self.transformer,
         ))
 
-        # Block contributions: Δx^i = hidden_states[i+1] - hidden_states[i]
+        # Block contributions: ΔB^i = hidden_states[i] - hidden_states[i-1]
+        # Internal layer index is 0-based, display is 1-based per notation.md
         for i in range(self.layer):
             delta = (self._hidden_states[i + 1][0, self.position, :] -
                      self._hidden_states[i][0, self.position, :])
             terms.append(BlockContribution(
                 tensor=delta,
-                layer=i,
+                layer=i,  # 0-based internally
                 transformer=self.transformer,
                 token_text=self.token_text,
                 position=self.position,
                 hidden_states=self._hidden_states,
             ))
 
-        return VectorSum(terms)
+        inner_sum = VectorSum(terms)
+
+        # Wrap with LN^T per notation.md: T(x) = LN^T(T^n(x))
+        return LayerNormApplication(
+            inner=inner_sum,
+            layer_norm=self.transformer._final_ln,
+            transformer=self.transformer,
+            name="LN^T",
+        )
 
 
 class AttentionContribution:
     """Contribution from the attention sublayer of a block.
 
-    Represents Δx^i_A - the attention component of block i's contribution.
+    Represents ΔB^i_A(x^{i-1}) - the attention component of block i's contribution.
+
+    Note: Internal layer index is 0-based, display is 1-based per notation.md.
 
     Implements VectorLike protocol.
     """
@@ -207,7 +218,7 @@ class AttentionContribution:
                  transformer: "PromptedTransformer", token_text: str,
                  position: int):
         self._tensor = tensor
-        self.layer = layer
+        self.layer = layer  # 0-based internally
         self.transformer = transformer
         self.token_text = token_text
         self.position = position
@@ -221,13 +232,20 @@ class AttentionContribution:
         return self._tensor.shape[0]
 
     def __repr__(self):
-        return f"Δx^{self.layer}_A"
+        # Display as operator composition per notation.md
+        block_idx = self.layer + 1
+        if self.layer == 0:
+            return f"ΔB^{block_idx}_A"
+        else:
+            return f"ΔB^{block_idx}_A T^{self.layer}"
 
 
 class MLPContribution:
     """Contribution from the MLP sublayer of a block.
 
-    Represents Δx^i_M - the MLP component of block i's contribution.
+    Represents ΔB^i_M(x^{i-1}) - the MLP component of block i's contribution.
+
+    Note: Internal layer index is 0-based, display is 1-based per notation.md.
 
     Implements VectorLike protocol.
     """
@@ -236,7 +254,7 @@ class MLPContribution:
                  transformer: "PromptedTransformer", token_text: str,
                  position: int):
         self._tensor = tensor
-        self.layer = layer
+        self.layer = layer  # 0-based internally
         self.transformer = transformer
         self.token_text = token_text
         self.position = position
@@ -250,14 +268,22 @@ class MLPContribution:
         return self._tensor.shape[0]
 
     def __repr__(self):
-        return f"Δx^{self.layer}_M"
+        # Display as operator composition per notation.md
+        block_idx = self.layer + 1
+        if self.layer == 0:
+            return f"ΔB^{block_idx}_M"
+        else:
+            return f"ΔB^{block_idx}_M T^{self.layer}"
 
 
 class BlockContribution:
     """Contribution from a single transformer block.
 
-    Represents Δx^i = T^{i+1}(x) - T^i(x), the change in residual
-    from block i. Can be expanded into Δx^i_A + Δx^i_M.
+    Represents ΔB^i(x^{i-1}) = B^i(x^{i-1}) - x^{i-1}, the additive
+    contribution from block i applied to the accumulated residual.
+    Can be expanded into ΔB^i_A + ΔB^i_M.
+
+    Note: Internal layer index is 0-based, display is 1-based per notation.md.
 
     Implements VectorLike protocol.
     """
@@ -269,7 +295,7 @@ class BlockContribution:
                  attention_tensor: torch.Tensor | None = None,
                  mlp_tensor: torch.Tensor | None = None):
         self._tensor = tensor
-        self.layer = layer
+        self.layer = layer  # 0-based internally
         self.transformer = transformer
         self.token_text = token_text
         self.position = position
@@ -288,12 +314,18 @@ class BlockContribution:
         return self._tensor.shape[0]
 
     def __repr__(self):
-        return f"Δx^{self.layer}"
+        # Display as operator composition per notation.md:
+        # ΔB^i T^{i-1} for i > 1, just ΔB^1 for i = 1 (since T^0 = I)
+        block_idx = self.layer + 1  # 1-based display
+        if self.layer == 0:
+            return f"ΔB^{block_idx}"
+        else:
+            return f"ΔB^{block_idx} T^{self.layer}"
 
     def expand(self) -> "VectorSum":
         """Expand into attention + MLP contributions.
 
-        Δx^i -> Δx^i_A + Δx^i_M
+        ΔB^i T^{i-1} -> ΔB^i_A T^{i-1} + ΔB^i_M T^{i-1}
 
         Returns:
             VectorSum of attention and MLP contributions
@@ -331,7 +363,7 @@ class BlockContribution:
 class VectorSum:
     """Sum of vector-like objects.
 
-    Represents an expanded form like: x + Δx^0 + Δx^1 + ... + Δx^{n-1}
+    Represents an expanded form like: (I + ΔB^1 + ΔB^2 T^1 + ... + ΔB^n T^{n-1})x
 
     Is itself VectorLike: can be used anywhere a vector is expected.
     """
@@ -363,7 +395,15 @@ class VectorSum:
         return iter(self.terms)
 
     def __repr__(self):
-        return " + ".join(repr(t) for t in self.terms)
+        # Display as factored form: (I + ΔB^1 + ΔB^2 T^1 + ...)x
+        # when first term is an embedding
+        if len(self.terms) > 1 and isinstance(self.terms[0], EmbeddingVector):
+            embed = self.terms[0]
+            # Operators: I for identity (embedding), then block contributions
+            ops = ["I"] + [repr(t) for t in self.terms[1:]]
+            return f"({' + '.join(ops)}){embed!r}"
+        else:
+            return " + ".join(repr(t) for t in self.terms)
 
     def expand(self) -> "VectorSum":
         """Expand each term that can be expanded."""
@@ -380,10 +420,318 @@ class VectorSum:
         return VectorSum(expanded)
 
 
-def expand(x: VectorLike) -> VectorSum:
+# =============================================================================
+# Expression Types for Symbolic Manipulation
+# =============================================================================
+
+
+class CenteredVector:
+    """Mean-centered vector: P(x) = x - mean(x).
+
+    This is the centering operation used inside layer normalization.
+    Implements VectorLike protocol.
+    """
+
+    def __init__(self, inner: VectorLike):
+        self.inner = inner
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        """Evaluate to centered tensor."""
+        x = self.inner.tensor
+        return x - x.mean()
+
+    @property
+    def d_model(self) -> int:
+        return self.inner.d_model
+
+    def __repr__(self):
+        return f"P({self.inner!r})"
+
+
+class GammaScaled:
+    """Gamma-scaled vector: γ ⊙ x (element-wise multiplication).
+
+    This represents the learned scale applied in layer normalization.
+    Implements VectorLike protocol.
+    """
+
+    def __init__(self, gamma: torch.Tensor, inner: VectorLike):
+        self._gamma = gamma
+        self.inner = inner
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        """Evaluate to gamma-scaled tensor."""
+        return self._gamma * self.inner.tensor
+
+    @property
+    def d_model(self) -> int:
+        return self.inner.d_model
+
+    def __repr__(self):
+        return f"γ⊙{self.inner!r}"
+
+
+class ScaledVector:
+    """Scalar-scaled vector: c * x.
+
+    Represents a vector multiplied by a scalar (like 1/σ in layer norm).
+    Implements VectorLike protocol.
+    """
+
+    def __init__(self, scale: float, inner: VectorLike, scale_label: str = ""):
+        self._scale = scale
+        self.inner = inner
+        self.scale_label = scale_label  # e.g., "1/σ" for display
+
+    @property
+    def scale(self) -> float:
+        return self._scale
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        """Evaluate to scaled tensor."""
+        return self._scale * self.inner.tensor
+
+    @property
+    def d_model(self) -> int:
+        return self.inner.d_model
+
+    def __repr__(self):
+        label = self.scale_label if self.scale_label else f"{self._scale:.3f}"
+        return f"{label}·{self.inner!r}"
+
+
+class InnerProduct:
+    """Inner product of two vector expressions: ⟨left, right⟩.
+
+    First-class expression type that can be expanded through layer norms
+    and vector sums.
+    """
+
+    def __init__(self, left: VectorLike, right: VectorLike, label: str = ""):
+        self.left = left
+        self.right = right
+        self._label = label
+
+    @property
+    def value(self) -> float:
+        """Evaluate the inner product to a scalar."""
+        return torch.dot(self.left.tensor, self.right.tensor).item()
+
+    def __repr__(self):
+        if self._label:
+            return f"⟨{self._label}, {self.right!r}⟩"
+        return f"⟨{self.left!r}, {self.right!r}⟩"
+
+    def __float__(self):
+        return self.value
+
+    def expand(self) -> "InnerProduct | ScalarSum":
+        """Expand through layer norms and sums.
+
+        ⟨u, LN(Σxᵢ)⟩ → (1/σ) * Σᵢ ⟨u⊙γ, P(xᵢ)⟩ + u·β
+        ⟨u, Σxᵢ⟩ → Σᵢ ⟨u, xᵢ⟩
+        """
+        # Expand through LayerNormApplication
+        if isinstance(self.right, LayerNormApplication):
+            return self.right.expand_inner_product(self.left)
+
+        # Expand through VectorSum
+        if isinstance(self.right, VectorSum):
+            terms = [InnerProduct(self.left, t) for t in self.right.terms]
+            return ScalarSum(terms)
+
+        return self
+
+
+class ScalarSum:
+    """Sum of scalar expressions.
+
+    Represents Σᵢ sᵢ where each sᵢ is a scalar expression.
+    """
+
+    def __init__(self, terms: list["InnerProduct | ScalarValue"], bias: float = 0.0,
+                 scale: float = 1.0, scale_label: str = ""):
+        self.terms = terms
+        self.bias = bias
+        self._scale = scale
+        self.scale_label = scale_label
+
+    @property
+    def value(self) -> float:
+        """Evaluate the sum."""
+        return self._scale * sum(float(t) for t in self.terms) + self.bias
+
+    def __repr__(self):
+        scale_str = self.scale_label if self.scale_label else (
+            f"{self._scale:.3f}·" if abs(self._scale - 1.0) > 1e-6 else ""
+        )
+        terms_str = " + ".join(repr(t) for t in self.terms)
+        if self.bias != 0:
+            return f"{scale_str}({terms_str}) + {self.bias:.2f}"
+        return f"{scale_str}({terms_str})"
+
+    def __float__(self):
+        return self.value
+
+    def __len__(self):
+        return len(self.terms)
+
+    def __iter__(self):
+        return iter(self.terms)
+
+
+class ScalarValue:
+    """A labeled scalar value."""
+
+    def __init__(self, value: float, label: str = ""):
+        self._value = value
+        self.label = label
+
+    @property
+    def value(self) -> float:
+        return self._value
+
+    def __float__(self):
+        return self._value
+
+    def __repr__(self):
+        if self.label:
+            return f"{self.label}={self._value:.2f}"
+        return f"{self._value:.2f}"
+
+
+class LayerNormApplication:
+    """Application of layer norm to a vector expression.
+
+    Represents LN^T(inner) where inner is typically a VectorSum.
+
+    Per notation.md:
+        T(x) = LN^T(T^n(x)) = LN^T(x + Σ ΔB^i(x^{i-1}))
+
+    This wrapper makes the layer norm explicit in expanded forms.
+    """
+
+    def __init__(self, inner: VectorLike, layer_norm, transformer: "PromptedTransformer",
+                 name: str = "LN^T"):
+        self.inner = inner
+        self._layer_norm = layer_norm
+        self.transformer = transformer
+        self.name = name
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        """Apply layer norm to get the normalized tensor."""
+        return self._layer_norm(self.inner.tensor)
+
+    @property
+    def d_model(self) -> int:
+        return self.inner.d_model
+
+    def __repr__(self):
+        return f"{self.name}({self.inner})"
+
+    def expand(self) -> "LayerNormApplication":
+        """Expand the inner expression while keeping LN wrapper."""
+        if hasattr(self.inner, 'expand'):
+            expanded_inner = self.inner.expand()
+            return LayerNormApplication(
+                inner=expanded_inner,
+                layer_norm=self._layer_norm,
+                transformer=self.transformer,
+                name=self.name,
+            )
+        return self
+
+    @property
+    def unwrapped(self) -> VectorLike:
+        """Get the inner expression without the LN wrapper."""
+        return self.inner
+
+    @property
+    def gamma(self) -> torch.Tensor:
+        """Layer norm scale parameter γ."""
+        return self._layer_norm.weight.detach()
+
+    @property
+    def beta(self) -> torch.Tensor:
+        """Layer norm shift parameter β."""
+        return self._layer_norm.bias.detach()
+
+    @property
+    def eps(self) -> float:
+        """Layer norm epsilon."""
+        return self._layer_norm.eps
+
+    def sigma(self) -> float:
+        """Compute the standard deviation of the total (centered) residual.
+
+        σ = ||P(x)||/√N where P(x) = x - mean(x)
+        """
+        total = self.inner.tensor
+        centered = total - total.mean()
+        var = (centered ** 2).mean()
+        return torch.sqrt(var + self.eps).item()
+
+    def expand_inner_product(self, vector: VectorLike) -> "ScalarSum":
+        """Expand an inner product ⟨vector, LN(inner)⟩ through the layer norm.
+
+        ⟨u, LN(Σxᵢ)⟩ = (1/σ) * Σᵢ ⟨u⊙γ, P(xᵢ)⟩ + u·β
+
+        where:
+        - σ is the standard deviation of the total residual
+        - P(xᵢ) = xᵢ - mean(xᵢ) is the centered term
+        - u⊙γ is element-wise product of vector with gamma
+
+        Args:
+            vector: The left vector in the inner product (e.g., unembedding)
+
+        Returns:
+            ScalarSum with individual term contributions
+        """
+        # Expand inner to VectorSum if needed
+        inner = self.inner
+        if hasattr(inner, 'expand') and not isinstance(inner, VectorSum):
+            inner = inner.expand()
+
+        # Get terms (either from VectorSum or wrap single term)
+        if isinstance(inner, VectorSum):
+            terms = inner.terms
+        else:
+            terms = [inner]
+
+        # Compute sigma from total
+        sigma = self.sigma()
+
+        # Compute bias term: u · β
+        u = vector.tensor
+        bias_term = torch.dot(u, self.beta).item()
+
+        # Create scaled inner products for each term
+        # Each term is ⟨u⊙γ, P(xᵢ)⟩
+        u_gamma = GammaScaled(self.gamma, vector)
+        inner_products = []
+        for term in terms:
+            centered = CenteredVector(term)
+            ip = InnerProduct(u_gamma, centered)
+            inner_products.append(ip)
+
+        return ScalarSum(
+            terms=inner_products,
+            bias=bias_term,
+            scale=1.0 / sigma,
+            scale_label="1/σ",
+        )
+
+
+def expand(x: VectorLike) -> VectorLike:
     """Expand a vector into its additive components.
 
-    For ResidualVector: T(x) -> embed(x) + Δx^0 + Δx^1 + ... + Δx^{n-1}
+    For ResidualVector: T(x) -> LN^T(x + ΔB^1(x) + ΔB^2(x^1) + ... + ΔB^n(x^{n-1}))
+    For LayerNormApplication: expand the inner expression, keep LN wrapper
+    For BlockContribution: ΔB^i -> ΔB^i_A + ΔB^i_M
     For VectorSum: expand each term recursively
     For other VectorLike: wrap in single-term VectorSum
 
@@ -391,13 +739,13 @@ def expand(x: VectorLike) -> VectorSum:
         x: Any vector-like object
 
     Returns:
-        VectorSum of components
+        Expanded form (LayerNormApplication, VectorSum, or wrapped VectorLike)
 
     Example:
         >>> x = T(" is")
         >>> ex = expand(x)
-        >>> print(ex)  # embed(' is') + Δx^0 + Δx^1 + ... + Δx^{11}
-        >>> print(len(ex))  # 13 (embedding + 12 blocks)
+        >>> print(ex)  # LN^T(embed(' is') + ΔB^1 + ΔB^2 + ... + ΔB^{12})
+        >>> print(ex.inner)  # embed(' is') + ΔB^1 + ... (VectorSum)
     """
     if hasattr(x, 'expand'):
         return x.expand()
@@ -893,6 +1241,33 @@ class PromptedTransformer:
 # Contribution Analysis
 # =============================================================================
 
+
+class UnembeddingVector:
+    """An unembedding vector for a token.
+
+    Represents the row of W_U corresponding to a token - used for computing logits.
+    Implements VectorLike protocol.
+    """
+
+    def __init__(self, tensor: torch.Tensor, token_text: str, token_id: int,
+                 transformer: "PromptedTransformer"):
+        self._tensor = tensor
+        self.token_text = token_text
+        self.token_id = token_id
+        self.transformer = transformer
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        return self._tensor
+
+    @property
+    def d_model(self) -> int:
+        return self._tensor.shape[0]
+
+    def __repr__(self):
+        return f"unembed({self.token_text!r})"
+
+
 class ContributionResult:
     """Result of contribution analysis showing how each term affects an inner product.
 
@@ -907,7 +1282,7 @@ class ContributionResult:
 
     def __init__(
         self,
-        inner_product: "LogitValue",
+        vector: VectorLike,
         terms: list[VectorLike],
         raw_contributions: list[float],
         normalized_contributions: list[float],
@@ -915,8 +1290,9 @@ class ContributionResult:
         total_raw: float,
         sigma: float,
         beta_term: float,
+        label: str = "",
     ):
-        self.inner_product = inner_product
+        self.vector = vector  # The vector we're taking inner product with
         self.terms = terms
         self.raw_contributions = raw_contributions  # ⟨u⊙γ, P(xᵢ)⟩ before dividing by σ
         self.normalized_contributions = normalized_contributions  # After dividing by σ
@@ -924,25 +1300,34 @@ class ContributionResult:
         self.total_raw = total_raw
         self.sigma = sigma  # Standard deviation of total residual
         self.beta_term = beta_term  # b_t = u·β
+        self._label = label
 
     @property
     def target_token(self) -> str:
-        """The target token (for logit inner products)."""
-        return self.inner_product.token_text
+        """The target token (for unembedding vectors)."""
+        if isinstance(self.vector, UnembeddingVector):
+            return self.vector.token_text
+        return self._label or repr(self.vector)
 
     @property
-    def computed_logit(self) -> float:
-        """The logit computed from contributions: sum(normalized) + beta_term."""
+    def computed_value(self) -> float:
+        """The inner product computed from contributions: sum(normalized) + beta_term."""
         return sum(self.normalized_contributions) + self.beta_term
 
+    # Backwards compatibility alias
+    @property
+    def computed_logit(self) -> float:
+        """Alias for computed_value (for backwards compatibility)."""
+        return self.computed_value
+
     def __repr__(self):
-        lines = [f"Contributions to {self.inner_product!r}:"]
+        lines = [f"Contributions to ⟨{self.target_token}, LN(...)⟩:"]
         for term, norm, pct in zip(self.terms, self.normalized_contributions, self.percentages):
             sign = "+" if norm >= 0 else ""
             lines.append(f"  {repr(term)}: {sign}{norm:.2f} ({pct:+.1%})")
         lines.append(f"  Subtotal: {sum(self.normalized_contributions):.2f}")
         lines.append(f"  Beta term: {self.beta_term:.2f}")
-        lines.append(f"  Total: {self.computed_logit:.2f}")
+        lines.append(f"  Total: {self.computed_value:.2f}")
         return "\n".join(lines)
 
     def __len__(self):
@@ -968,11 +1353,15 @@ class ContributionResult:
         return "\n".join(lines)
 
 
-def contribution(expanded: VectorSum, inner_product: LogitValue) -> ContributionResult:
-    """Compute how each term in an expanded vector contributes to an inner product.
+def contribution(
+    expr: "LayerNormApplication | VectorSum",
+    vector: "VectorLike | LogitValue | str",
+    transformer: "PromptedTransformer | None" = None,
+) -> ContributionResult:
+    """Compute how each term in an expression contributes to an inner product.
 
-    Given an expanded residual (from expand()) and an inner product (like a logit),
-    computes each term's contribution to the final value.
+    Given a LayerNormApplication or VectorSum and a vector, computes each term's
+    contribution to the inner product ⟨vector, expr⟩.
 
     The inner product ⟨u, LN(Σᵢ xᵢ)⟩ decomposes as:
         value = (1/σ) * Σᵢ cᵢ + bias
@@ -981,8 +1370,12 @@ def contribution(expanded: VectorSum, inner_product: LogitValue) -> Contribution
     See doc/contribution.md and doc/analysis/speculation.md for mathematical details.
 
     Args:
-        expanded: A VectorSum from expand(residual)
-        inner_product: A LogitValue from logits(x)[token]
+        expr: A LayerNormApplication or VectorSum from expand(residual)
+        vector: The vector to take inner product with. Can be:
+            - VectorLike (any vector)
+            - LogitValue (extracts unembedding vector)
+            - str (token text, requires transformer)
+        transformer: Required if vector is a string
 
     Returns:
         ContributionResult with breakdown by term
@@ -990,50 +1383,107 @@ def contribution(expanded: VectorSum, inner_product: LogitValue) -> Contribution
     Example:
         >>> T = PromptedTransformer(model, tokenizer, "The capital of Ireland")
         >>> x = T(" is")
-        >>> ex = expand(x)
-        >>> logit = logits(x)[" Dublin"]
-        >>> contrib = contribution(ex, logit)
+        >>> ex = expand(x)  # Returns LayerNormApplication
+        >>> contrib = contribution(ex, " Dublin", T)  # Use token string
         >>> print(contrib.summary())
-    """
-    if not isinstance(expanded, VectorSum):
-        raise TypeError(f"Expected VectorSum, got {type(expanded).__name__}")
 
-    if not isinstance(inner_product, LogitValue):
+        # Or with LogitValue for backwards compatibility:
+        >>> logit = logits(x)[" Dublin"]
+        >>> contrib = contribution(ex.inner, logit)
+    """
+    # Handle LayerNormApplication - extract VectorSum and layer norm params
+    if isinstance(expr, LayerNormApplication):
+        ln_app = expr
+        # Expand inner if needed
+        inner = ln_app.inner
+        if hasattr(inner, 'expand') and not isinstance(inner, VectorSum):
+            inner = inner.expand()
+        if isinstance(inner, VectorSum):
+            terms = list(inner.terms)
+        else:
+            terms = [inner]
+
+        gamma = ln_app.gamma
+        beta = ln_app.beta
+        eps = ln_app.eps
+        xformer = ln_app.transformer
+
+    elif isinstance(expr, VectorSum):
+        # Legacy path: VectorSum requires inferring transformer from vector
+        terms = list(expr.terms)
+        gamma = None
+        beta = None
+        eps = 1e-5
+        xformer = None
+
+    else:
         raise TypeError(
-            f"Expected LogitValue (from logits(x)[token]), got {type(inner_product).__name__}"
+            f"Expected LayerNormApplication or VectorSum, got {type(expr).__name__}"
         )
 
-    if len(expanded.terms) == 0:
-        raise ValueError("VectorSum has no terms")
+    # Resolve the vector argument
+    label = ""
+    if isinstance(vector, LogitValue):
+        # Extract unembedding vector from LogitValue
+        xformer = vector._residual.transformer
+        token_id = xformer.get_token_id(vector.token_text)
+        unembed_matrix = xformer._unembed.weight
+        u_tensor = unembed_matrix[token_id, :].detach()
+        u = UnembeddingVector(u_tensor, vector.token_text, token_id, xformer)
+        label = vector.token_text
 
-    # Get transformer from the inner product's residual
-    transformer = inner_product._residual.transformer
+        # Get layer norm params if not already set
+        if gamma is None:
+            final_ln = xformer._final_ln
+            gamma = final_ln.weight.detach()
+            beta = final_ln.bias.detach()
+            eps = final_ln.eps
 
-    # Get layer norm parameters (γ, β)
-    final_ln = transformer._final_ln
-    gamma = final_ln.weight.detach()  # [d_model]
-    beta = final_ln.bias.detach()  # [d_model]
-    eps = final_ln.eps
+    elif isinstance(vector, str):
+        # Token string - need transformer
+        if transformer is None and xformer is None:
+            raise ValueError("transformer required when vector is a token string")
+        xformer = transformer or xformer
+        token_id = xformer.get_token_id(vector)
+        unembed_matrix = xformer._unembed.weight
+        u_tensor = unembed_matrix[token_id, :].detach()
+        u = UnembeddingVector(u_tensor, vector, token_id, xformer)
+        label = vector
 
-    # Get unembedding vector for target token
-    token_id = transformer.get_token_id(inner_product.token_text)
-    unembed_matrix = transformer._unembed.weight  # [vocab_size, d_model]
-    u = unembed_matrix[token_id, :].detach()  # [d_model]
+        # Get layer norm params if not already set
+        if gamma is None:
+            final_ln = xformer._final_ln
+            gamma = final_ln.weight.detach()
+            beta = final_ln.bias.detach()
+            eps = final_ln.eps
+
+    else:
+        # Assume VectorLike
+        u = vector
+        if gamma is None:
+            raise ValueError(
+                "LayerNormApplication required when using raw VectorLike, "
+                "or pass a LogitValue/token string to infer layer norm params"
+            )
+
+    if len(terms) == 0:
+        raise ValueError("Expression has no terms")
 
     # Compute beta term: b_t = u · β
-    beta_term = torch.dot(u, beta).item()
+    beta_term = torch.dot(u.tensor, beta).item()
 
     # Precompute u ⊙ γ (element-wise product)
-    u_gamma = u * gamma  # [d_model]
+    u_gamma = u.tensor * gamma  # [d_model]
 
     # Compute the total residual to get sigma (standard deviation)
-    total_residual = expanded.tensor.detach()
-    var_total = total_residual.var(unbiased=False)
+    total_residual = sum(t.tensor for t in terms)
+    centered_total = total_residual - total_residual.mean()
+    var_total = (centered_total ** 2).mean()
     sigma = torch.sqrt(var_total + eps).item()
 
     # Compute contribution for each term
     raw_contributions = []
-    for term in expanded.terms:
+    for term in terms:
         x_i = term.tensor.detach()  # [d_model]
         mu_i = x_i.mean()  # scalar
         centered = x_i - mu_i  # [d_model]
@@ -1053,12 +1503,13 @@ def contribution(expanded: VectorSum, inner_product: LogitValue) -> Contribution
         percentages = [c / total_normalized for c in normalized_contributions]
 
     return ContributionResult(
-        inner_product=inner_product,
-        terms=list(expanded.terms),
+        vector=u,
+        terms=terms,
         raw_contributions=raw_contributions,
         normalized_contributions=normalized_contributions,
         percentages=percentages,
         total_raw=total_raw,
         sigma=sigma,
         beta_term=beta_term,
+        label=label,
     )

@@ -1,6 +1,6 @@
 # TransformerAlgebra Roadmap
 
-*December 2025cd*
+*January 2026*
 
 This document captures the vision and requirements for symbolic analysis of transformer internal states, and how this drives development across the three related repositories.
 
@@ -36,20 +36,22 @@ Instead of raw logits, we want **symbolic expressions** showing inner products b
 
 **Desired output format:**
 ```
-⟨Dublin̄, x₁²⟩ = 0.73   # angle-based, after block 2, position 1
-⟨Dublin̄, LN(x₁¹²)⟩ = 0.89   # final layer normalized
+⟨Dublin̄, x²⟩ = 0.73   # angle-based, after block 2
+⟨Dublin̄, LN(x^n)⟩ = 0.89   # final layer normalized
 
 Decomposition at final layer:
-  ⟨Dublin̄, the̲₁⟩ = 0.12      # contribution from "the" embedding
-  ⟨Dublin̄, Δx₁^(A,3,2)⟩ = 0.31  # contribution from attention head 3 in block 2
-  ⟨Dublin̄, Δx₁^(M,7)⟩ = 0.24    # contribution from MLP in block 7
+  ⟨Dublin̄, embed(' is')⟩ = 0.12      # contribution from token embedding
+  ⟨Dublin̄, ΔB³_A⟩ = 0.31            # contribution from attention in block 3
+  ⟨Dublin̄, ΔB^n_M⟩ = 0.24           # contribution from MLP in final block
+  R = 0.02                           # remainder (other terms)
 ```
 
 Key requirements:
 1. **Named vectors** - use token-based names (underline for embedding, overline for unembedding)
-2. **Operator labels** - show which block/layer/head produced each contribution  
+2. **Operator notation** - show block contributions as `ΔB^i` with `_A`/`_M` for sublayers
 3. **Logits and probabilities** - report inner products (logits) and softmax probabilities
-4. **Referenceable terms** - be able to grab `Δx₁^(A,3,2)` and examine it further
+4. **Remainder terms** - collapse negligible contributions for clarity
+5. **MLP input tracing** - when MLP dominates, trace where its input came from
 
 ---
 
@@ -114,8 +116,8 @@ Julia builds expressions from these refs and calls Python to resolve them.
    - `summary()` methods format top-k predictions
 
 2. ~~**Implement `expand()`**~~ ✓ DONE (Level 1 & 2)
-   - Level 1: `T(x)` → `embed(x) + Δx^0 + Δx^1 + ... + Δx^{n-1}`
-   - Level 2: `Δx^i` → `Δx^i_A + Δx^i_M` (attention + MLP)
+   - Level 1: `T^n(x)` → `x + ΔB^1(x) + ΔB^2(x^1) + ... + ΔB^n(x^{n-1})`
+   - Level 2: `ΔB^i` → `ΔB^i_A + ΔB^i_M` (attention + MLP)
    - Each term is a referenceable VectorLike object
    - Sums verified mathematically exact
    - See `doc/expand_issues.md` for implementation details
@@ -123,23 +125,30 @@ Julia builds expressions from these refs and calls Python to resolve them.
 3. ~~**Implement contribution analysis**~~ ✓ DONE
    - `contribution(expanded, logit)` shows how each term contributes to an inner product
    - Display as ranked list with `summary()` and `top_k()`
-   - Experimental finding: final block dominates (~95%) for all predictions
+   - Experimental finding: final block MLP dominates (~80% of logit contribution)
    - See `doc/contribution.md` for design and results
 
-4. **Expand Level 3: Per-head attention** ← NEXT
-   - `Δx^i_A` → `Σ_h Δx^{i,h}_A` (per-head contributions)
-   - Enables head-level attribution to understand which heads matter
-   - May reveal where context integration actually occurs
+4. **MLP input tracing** ← NEXT PRIORITY
+   - Given that `ΔB^n_M` dominates, trace *where its input came from*
+   - Input to MLP: `LN_M^i(x^{i-1})` (parallel) or `LN_M^i(x^{i-1} + ΔB^i_A)` (sequential)
+   - Implement `mlp_input(block_contrib)` to extract the pre-MLP residual
+   - Recursively expand to identify which earlier blocks/positions contributed
+   - Goal: keep analysis high-level (block attribution) rather than neuron-level
+   - See `doc/notation.md` § MLP Input Tracing for notation
 
-5. **Track position embedding contributions**
-   - Separate position embedding from token embedding in expansion
-   - Currently `embed(token)` includes both; should be `embed(token) + pos(j)`
-   - Enables questions like "how much does position vs token identity matter?"
-   - Pythia uses rotary embeddings (RoPE) which complicates this—position is applied per-head in attention, not added to embeddings
+5. **Remainder terms for concise display**
+   - When showing contributions, collapse negligible terms into remainder `R`
+   - Display: `z_t ≈ c₁ + c₂ + c₃ + R` where `|R| < ε|z_t|`
+   - Implement `contribution(...).simplified(threshold=0.05)`
 
-6. **Named vector registry** (lower priority)
-   - Optional: `embed["Dublin"]`, `unembed["Dublin"]` syntax
-   - Current subscripting via `logits(x)[token]` may be sufficient
+6. **Expand Level 3: Per-head attention** (lower priority)
+   - `ΔB^i_A` → `Σ_h ΔB^{i,h}_A` (per-head contributions)
+   - Useful for understanding which heads attend to relevant context
+   - May be needed for full MLP input tracing
+
+7. **Track position embedding contributions** (lower priority)
+   - Pythia uses rotary embeddings (RoPE)—position is applied per-head in attention
+   - Less straightforward than additive positional embeddings
 
 ### Phase 2: Export Format (Python → Julia)
 
@@ -155,31 +164,37 @@ Julia builds expressions from these refs and calls Python to resolve them.
 ## API Sketch (Python)
 
 ```python
-from transformer_algebra import PromptedTransformer, load_pythia
+from transformer_algebra import (
+    PromptedTransformer, load_pythia_model, expand, logits, contribution
+)
 
 # Load model
-model = load_pythia("EleutherAI/pythia-160m-deduped")
+model, tokenizer = load_pythia_model()
 
 # Create prompted transformer (caches all residuals)
-T = PromptedTransformer(model, "The capital of Ireland is")
+T = PromptedTransformer(model, tokenizer, "The capital of Ireland")
 
-# Access named vectors
-dublin = T.unembed["Dublin"]  # Residual with label "Dublin̄"
-x_final = T.residual(layer=-1, position=-1)  # x₅¹²
+# Get residual for next token
+x = T(" is")  # ResidualVector: T^n(embed(" is"))
 
-# Compute symbolic inner product
-ip = dublin @ x_final  # InnerProduct object
-print(ip)  # "⟨Dublin̄, x₅¹²⟩ = 0.89"
+# Expand into block contributions
+ex = expand(x)  # x + ΔB^1 + ΔB^2 + ... + ΔB^n
+print(ex)  # "embed(' is') + ΔB^0 + ΔB^1 + ... + ΔB^11"
 
-# Decompose the residual
-for component in T.decompose(x_final):
-    print(dublin @ component)
-# "⟨Dublin̄, is̲₅⟩ = 0.12"
-# "⟨Dublin̄, Δx₅^(A,3,2)⟩ = 0.31"
-# "⟨Dublin̄, Δx₅^(M,7)⟩ = 0.24"
+# Analyze contributions to a specific logit
+dublin_logit = logits(x)[" Dublin"]
+contrib = contribution(ex, dublin_logit)
+print(contrib.summary())
+# "Top 5 contributions to ' Dublin':
+#    ΔB^11_M: +1522.12 (+80.8%)
+#    ΔB^11_A: +264.66 (+14.1%)
+#    ..."
 
-# Export for Julia
-T.export("ireland_analysis.h5")
+# Expand further to see attention vs MLP in final block
+ex2 = ex.expand()  # Expands ΔB^i -> ΔB^i_A + ΔB^i_M
+
+# Future: trace MLP input
+# mlp_input = ex[-1].mlp_input()  # What fed into ΔB^11_M?
 ```
 
 ---

@@ -13,6 +13,15 @@ from .core import (
     AttentionContribution,
     MLPContribution,
     VectorSum,
+    LayerNormApplication,
+    # Expression types for symbolic manipulation
+    CenteredVector,
+    GammaScaled,
+    ScaledVector,
+    InnerProduct,
+    ScalarSum,
+    ScalarValue,
+    UnembeddingVector,
     # Logits
     LogitMapping,
     LogitValue,
@@ -54,6 +63,15 @@ __all__ = [
     "AttentionContribution",
     "MLPContribution",
     "VectorSum",
+    "LayerNormApplication",
+    # Expression types for symbolic manipulation
+    "CenteredVector",
+    "GammaScaled",
+    "ScaledVector",
+    "InnerProduct",
+    "ScalarSum",
+    "ScalarValue",
+    "UnembeddingVector",
     # Logits
     "LogitMapping",
     "LogitValue",
