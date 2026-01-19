@@ -11,6 +11,38 @@ if TYPE_CHECKING:
 
 
 # =============================================================================
+# LaTeX Rendering Utilities
+# =============================================================================
+
+def _latex_escape(text: str) -> str:
+    """Escape special LaTeX characters in text for use in \\text{}.
+
+    Handles common special characters that appear in token text.
+    """
+    # Order matters: escape backslash first
+    replacements = [
+        ('\\', r'\textbackslash{}'),
+        ('_', r'\_'),
+        ('^', r'\^{}'),
+        ('&', r'\&'),
+        ('%', r'\%'),
+        ('$', r'\$'),
+        ('#', r'\#'),
+        ('{', r'\{'),
+        ('}', r'\}'),
+        ('~', r'\textasciitilde{}'),
+    ]
+    for char, escaped in replacements:
+        text = text.replace(char, escaped)
+    return text
+
+
+def _latex_token(token_text: str) -> str:
+    """Format a token for LaTeX display, escaping special characters."""
+    return _latex_escape(token_text)
+
+
+# =============================================================================
 # VectorLike Protocol
 # =============================================================================
 
@@ -111,6 +143,11 @@ class EmbeddingVector:
     def __repr__(self):
         return f"embed({self.token_text!r})"
 
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        token = _latex_token(self.token_text)
+        return rf"$\underline{{\text{{{token}}}}}$"
+
 
 class ResidualVector:
     """A residual stream vector - the output of T acting on an embedding.
@@ -148,6 +185,16 @@ class ResidualVector:
             return f"T({embed_str})"
         else:
             return f"T^{self.layer}({embed_str})"
+
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        token = _latex_token(self.token_text)
+        embed_latex = rf"\underline{{\text{{{token}}}}}"
+        n_layers = self.transformer.config.n_layers
+        if self.layer == n_layers:
+            return rf"$T({embed_latex})$"
+        else:
+            return rf"$T^{{{self.layer}}}({embed_latex})$"
 
     @property
     def normed(self) -> torch.Tensor:
@@ -239,6 +286,14 @@ class AttentionContribution:
         else:
             return f"ΔB^{block_idx}_A T^{self.layer}"
 
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        block_idx = self.layer + 1
+        if self.layer == 0:
+            return rf"$\Delta B^{{{block_idx}}}_A$"
+        else:
+            return rf"$\Delta B^{{{block_idx}}}_A T^{{{self.layer}}}$"
+
 
 class MLPContribution:
     """Contribution from the MLP sublayer of a block.
@@ -274,6 +329,14 @@ class MLPContribution:
             return f"ΔB^{block_idx}_M"
         else:
             return f"ΔB^{block_idx}_M T^{self.layer}"
+
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        block_idx = self.layer + 1
+        if self.layer == 0:
+            return rf"$\Delta B^{{{block_idx}}}_M$"
+        else:
+            return rf"$\Delta B^{{{block_idx}}}_M T^{{{self.layer}}}$"
 
 
 class BlockContribution:
@@ -321,6 +384,14 @@ class BlockContribution:
             return f"ΔB^{block_idx}"
         else:
             return f"ΔB^{block_idx} T^{self.layer}"
+
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        block_idx = self.layer + 1
+        if self.layer == 0:
+            return rf"$\Delta B^{{{block_idx}}}$"
+        else:
+            return rf"$\Delta B^{{{block_idx}}} T^{{{self.layer}}}$"
 
     def expand(self) -> "VectorSum":
         """Expand into attention + MLP contributions.
@@ -405,6 +476,28 @@ class VectorSum:
         else:
             return " + ".join(repr(t) for t in self.terms)
 
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        def term_latex(term):
+            """Get LaTeX for a term, stripping outer $...$."""
+            if hasattr(term, '_repr_latex_'):
+                latex = term._repr_latex_()
+                # Strip outer $ signs for embedding in larger expression
+                if latex.startswith('$') and latex.endswith('$'):
+                    return latex[1:-1]
+                return latex
+            return repr(term)
+
+        if len(self.terms) > 1 and isinstance(self.terms[0], EmbeddingVector):
+            embed = self.terms[0]
+            embed_latex = term_latex(embed)
+            # Operators: I for identity, then block contributions
+            ops = ["I"] + [term_latex(t) for t in self.terms[1:]]
+            return rf"$({' + '.join(ops)}){embed_latex}$"
+        else:
+            terms_latex = [term_latex(t) for t in self.terms]
+            return rf"${' + '.join(terms_latex)}$"
+
     def expand(self) -> "VectorSum":
         """Expand each term that can be expanded."""
         expanded: list[VectorLike] = []
@@ -448,6 +541,13 @@ class CenteredVector:
     def __repr__(self):
         return f"P({self.inner!r})"
 
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        inner_latex = self.inner._repr_latex_() if hasattr(self.inner, '_repr_latex_') else repr(self.inner)
+        if inner_latex.startswith('$') and inner_latex.endswith('$'):
+            inner_latex = inner_latex[1:-1]
+        return rf"$P({inner_latex})$"
+
 
 class GammaScaled:
     """Gamma-scaled vector: γ ⊙ x (element-wise multiplication).
@@ -471,6 +571,13 @@ class GammaScaled:
 
     def __repr__(self):
         return f"γ⊙{self.inner!r}"
+
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        inner_latex = self.inner._repr_latex_() if hasattr(self.inner, '_repr_latex_') else repr(self.inner)
+        if inner_latex.startswith('$') and inner_latex.endswith('$'):
+            inner_latex = inner_latex[1:-1]
+        return rf"$\gamma \odot {inner_latex}$"
 
 
 class ScaledVector:
@@ -502,6 +609,18 @@ class ScaledVector:
         label = self.scale_label if self.scale_label else f"{self._scale:.3f}"
         return f"{label}·{self.inner!r}"
 
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        inner_latex = self.inner._repr_latex_() if hasattr(self.inner, '_repr_latex_') else repr(self.inner)
+        if inner_latex.startswith('$') and inner_latex.endswith('$'):
+            inner_latex = inner_latex[1:-1]
+        if self.scale_label:
+            # Convert common labels to LaTeX
+            label = self.scale_label.replace('σ', r'\sigma')
+            return rf"${label} \cdot {inner_latex}$"
+        else:
+            return rf"${self._scale:.3f} \cdot {inner_latex}$"
+
 
 class InnerProduct:
     """Inner product of two vector expressions: ⟨left, right⟩.
@@ -524,6 +643,24 @@ class InnerProduct:
         if self._label:
             return f"⟨{self._label}, {self.right!r}⟩"
         return f"⟨{self.left!r}, {self.right!r}⟩"
+
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        def get_latex(obj):
+            if hasattr(obj, '_repr_latex_'):
+                latex = obj._repr_latex_()
+                if latex.startswith('$') and latex.endswith('$'):
+                    return latex[1:-1]
+                return latex
+            return repr(obj)
+
+        right_latex = get_latex(self.right)
+        if self._label:
+            # Labels like "γ⊙unembed(' token')" need conversion
+            left_latex = self._label.replace('γ', r'\gamma').replace('⊙', r' \odot ')
+            return rf"$\langle {left_latex}, {right_latex} \rangle$"
+        left_latex = get_latex(self.left)
+        return rf"$\langle {left_latex}, {right_latex} \rangle$"
 
     def __float__(self):
         return self.value
@@ -573,6 +710,36 @@ class ScalarSum:
             return f"{scale_str}({terms_str}) + {self.bias:.2f}"
         return f"{scale_str}({terms_str})"
 
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        def get_latex(obj):
+            if hasattr(obj, '_repr_latex_'):
+                latex = obj._repr_latex_()
+                if latex.startswith('$') and latex.endswith('$'):
+                    return latex[1:-1]
+                return latex
+            return repr(obj)
+
+        terms_latex = [get_latex(t) for t in self.terms]
+        terms_str = " + ".join(terms_latex)
+
+        # Convert scale label to LaTeX (e.g., "1/σ" -> "1/\sigma")
+        if self.scale_label:
+            scale_str = self.scale_label.replace('σ', r'\sigma')
+        elif abs(self._scale - 1.0) > 1e-6:
+            scale_str = f"{self._scale:.3f}"
+        else:
+            scale_str = ""
+
+        if scale_str:
+            if self.bias != 0:
+                return rf"${scale_str} \cdot ({terms_str}) + {self.bias:.2f}$"
+            return rf"${scale_str} \cdot ({terms_str})$"
+        else:
+            if self.bias != 0:
+                return rf"$({terms_str}) + {self.bias:.2f}$"
+            return rf"${terms_str}$"
+
     def __float__(self):
         return self.value
 
@@ -601,6 +768,14 @@ class ScalarValue:
         if self.label:
             return f"{self.label}={self._value:.2f}"
         return f"{self._value:.2f}"
+
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        if self.label:
+            # Convert Greek letters
+            label = self.label.replace('σ', r'\sigma').replace('β', r'\beta')
+            return rf"${label} = {self._value:.2f}$"
+        return rf"${self._value:.2f}$"
 
 
 class LayerNormApplication:
@@ -632,6 +807,15 @@ class LayerNormApplication:
 
     def __repr__(self):
         return f"{self.name}({self.inner})"
+
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        inner_latex = self.inner._repr_latex_() if hasattr(self.inner, '_repr_latex_') else repr(self.inner)
+        if inner_latex.startswith('$') and inner_latex.endswith('$'):
+            inner_latex = inner_latex[1:-1]
+        # Convert name like "LN^T" to LaTeX "\mathrm{LN}^T"
+        name_latex = self.name.replace('LN', r'\mathrm{LN}')
+        return rf"${name_latex}({inner_latex})$"
 
     def expand(self) -> "LayerNormApplication":
         """Expand the inner expression while keeping LN wrapper."""
@@ -766,6 +950,13 @@ class LogitMapping:
     def __repr__(self):
         return f"logits({self._residual})"
 
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        residual_latex = self._residual._repr_latex_() if hasattr(self._residual, '_repr_latex_') else repr(self._residual)
+        if residual_latex.startswith('$') and residual_latex.endswith('$'):
+            residual_latex = residual_latex[1:-1]
+        return rf"$\mathrm{{logits}}({residual_latex})$"
+
     def __getitem__(self, token_text: str) -> "LogitValue":
         """Get the logit for a specific token."""
         token_id = self._transformer.get_token_id(token_text)
@@ -804,6 +995,15 @@ class LogitValue:
     def __repr__(self):
         return f"<unembed({self.token_text!r}), {self._residual}> = {self.value:.2f}"
 
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        token = _latex_token(self.token_text)
+        unembed_latex = rf"\overline{{\text{{{token}}}}}"
+        residual_latex = self._residual._repr_latex_() if hasattr(self._residual, '_repr_latex_') else repr(self._residual)
+        if residual_latex.startswith('$') and residual_latex.endswith('$'):
+            residual_latex = residual_latex[1:-1]
+        return rf"$\langle {unembed_latex}, {residual_latex} \rangle = {self.value:.2f}$"
+
     def __float__(self):
         return self.value
 
@@ -837,6 +1037,13 @@ class ProbabilityMapping:
 
     def __repr__(self):
         return f"P(token | {self._residual})"
+
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        residual_latex = self._residual._repr_latex_() if hasattr(self._residual, '_repr_latex_') else repr(self._residual)
+        if residual_latex.startswith('$') and residual_latex.endswith('$'):
+            residual_latex = residual_latex[1:-1]
+        return rf"$P(\mathrm{{token}} \mid {residual_latex})$"
 
     def __getitem__(self, token_text: str) -> "ProbabilityValue":
         """Get the probability for a specific token."""
@@ -887,6 +1094,14 @@ class ProbabilityValue:
 
     def __repr__(self):
         return f"P({self.token_text!r} | {self._residual}) = {self.prob:.2%}"
+
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        token = _latex_token(self.token_text)
+        residual_latex = self._residual._repr_latex_() if hasattr(self._residual, '_repr_latex_') else repr(self._residual)
+        if residual_latex.startswith('$') and residual_latex.endswith('$'):
+            residual_latex = residual_latex[1:-1]
+        return rf"$P(\text{{{token}}} \mid {residual_latex}) = {self.prob:.2%}$"
 
     def __float__(self):
         return self.prob
@@ -963,6 +1178,11 @@ class PromptedTransformer:
     def __repr__(self):
         n = len(self._token_info.tokens)
         return f"T(<{n} tokens>)"
+
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        n = len(self._token_info.tokens)
+        return rf"$T(\langle {n} \text{{ tokens}} \rangle)$"
 
     def embed(self, token_text: str) -> EmbeddingVector:
         """Get the embedding vector for a token.
@@ -1266,6 +1486,11 @@ class UnembeddingVector:
 
     def __repr__(self):
         return f"unembed({self.token_text!r})"
+
+    def _repr_latex_(self):
+        """LaTeX representation for Jupyter notebooks."""
+        token = _latex_token(self.token_text)
+        return rf"$\overline{{\text{{{token}}}}}$"
 
 
 class ContributionResult:
