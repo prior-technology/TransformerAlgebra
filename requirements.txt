@@ -1,9 +1,0 @@
-# Core dependencies for TransformerAlgebra
-numpy>=2.0.0
-jupyter>=1.0.0
-ipykernel>=6.0.0
-
-# Mechanistic interpretability
-transformer-lens>=2.0.0
-torch>=2.0.0
-matplotlib>=3.0.0
